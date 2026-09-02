@@ -1,0 +1,68 @@
+Screen {
+    background: $surface;
+}
+
+#view {
+    height: 1fr;
+}
+
+/* --- table view --- */
+
+DataTable {
+    height: 1fr;
+}
+
+#status {
+    dock: bottom;
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text-muted;
+}
+
+#search {
+    dock: bottom;
+    border: none;
+    height: 1;
+    padding: 0 1;
+    background: $boost;
+}
+
+/* --- code view --- */
+
+CodeView {
+    padding: 0 1;
+}
+
+/* --- modals --- */
+
+CellModal, HelpModal {
+    align: center middle;
+    background: $background 60%;
+}
+
+#cell-dialog, #help-dialog {
+    width: 80%;
+    max-width: 100;
+    height: auto;
+    max-height: 80%;
+    padding: 1 2;
+    background: $panel;
+    border: round $primary;
+}
+
+#cell-title, #help-title {
+    height: auto;
+    padding-bottom: 1;
+}
+
+#cell-body, #help-body {
+    height: auto;
+    max-height: 20;
+}
+
+#cell-hint {
+    height: 1;
+    padding-top: 1;
+    color: $text-muted;
+}

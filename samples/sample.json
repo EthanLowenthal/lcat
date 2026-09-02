@@ -1,0 +1,6 @@
+[
+  {"id": 1, "host": "web-01", "region": "us-east-1", "cpu": 0.42, "tags": ["prod", "web"]},
+  {"id": 2, "host": "web-02", "region": "us-east-1", "cpu": 0.71, "tags": ["prod", "web"]},
+  {"id": 3, "host": "db-01", "region": "us-west-2", "cpu": 0.18, "tags": ["prod", "db"], "replica": true},
+  {"id": 4, "host": "batch-01", "region": "eu-west-1", "cpu": 0.95, "tags": []}
+]
