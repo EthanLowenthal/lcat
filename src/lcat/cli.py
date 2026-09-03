@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from lcat.app import LcatApp
 
-    LcatApp(doc).run()
+    LcatApp(doc, encoding=args.encoding).run()
     return 0
 
 

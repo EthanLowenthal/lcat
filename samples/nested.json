@@ -1,0 +1,24 @@
+[
+  "lcat build log 2026-09-02",
+  {
+    "event": "start",
+    "commit": "3361fa6",
+    "targets": [
+      { "platform": "darwin", "arch": ["arm64", "x86_64"] },
+      { "platform": "linux", "arch": ["x86_64"] }
+    ]
+  },
+  ["artifact", "lcat.whl", 20481, "sha256:b31c0f"],
+  ["artifact", "lcat.tar.gz", 17903, "sha256:9ae441"],
+  {
+    "event": "tests",
+    "passed": 21,
+    "failed": 0,
+    "slowest": [
+      ["test_large_table_streams_every_row", 0.42],
+      ["test_markdown_view_scrolls", 0.18]
+    ]
+  },
+  { "event": "finish", "duration_seconds": 12.4, "warnings": null },
+  42
+]

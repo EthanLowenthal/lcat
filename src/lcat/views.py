@@ -8,11 +8,13 @@ import subprocess
 import sys
 
 from rich.syntax import Syntax
+from textual import events
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.coordinate import Coordinate
+from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Input, MarkdownViewer, Static
+from textual.widgets import DataTable, Input, MarkdownViewer, Static, TextArea
 
 CELL_WIDTH = 60
 """Cells wider than this are truncated for display; `enter` shows the full value."""
@@ -52,25 +54,89 @@ def _sort_key(value: str):
         return (1, 0.0, text.casefold())
 
 
-class CellModal(ModalScreen[None]):
-    """Full, untruncated value of a single cell."""
+class RawEditor(TextArea):
+    """A TextArea that leaves insert mode on escape instead of moving focus.
+
+    TextArea consumes escape itself, before bindings are consulted, so the key has
+    to be intercepted here rather than bound.
+    """
+
+    class Done(Message):
+        """Escape was pressed: the editor's text is ready to be committed."""
+
+        def __init__(self, editor: RawEditor) -> None:
+            super().__init__()
+            self.editor = editor
+
+        @property
+        def control(self) -> RawEditor:
+            return self.editor
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.Done(self))
+            return
+        await super()._on_key(event)
+
+
+class CellModal(ModalScreen["tuple[str, bool] | None"]):
+    """Full, untruncated value of a single cell, editable with `i`.
+
+    Dismisses with None when nothing was edited, or (text, save_file) when it was.
+    """
 
     BINDINGS = [
-        Binding("escape,enter,q", "dismiss", "close"),
+        Binding("escape,enter,q", "close", "close"),
+        Binding("ctrl+s", "save_cell", "save", show=False),
     ]
 
-    def __init__(self, column: str, value: str, position: str) -> None:
+    def __init__(
+        self, column: str, value: str, position: str, *, editable: bool = False
+    ) -> None:
         super().__init__()
         self._column = column
         self._value = value
         self._position = position
+        self._editable = editable
 
     def compose(self):
         with Vertical(id="cell-dialog"):
-            yield Static(f"[b]{self._column}[/b]  [dim]{self._position}[/dim]", id="cell-title")
-            with VerticalScroll(id="cell-body"):
-                yield Static(self._value or "[dim](empty)[/dim]", id="cell-value")
-            yield Static("[dim]esc to close[/dim]", id="cell-hint")
+            title = f"[b]{self._column}[/b]  [dim]{self._position}[/dim]"
+            if self._editable:
+                title += "  [dim]· editing[/dim]"
+            yield Static(title, id="cell-title")
+            if self._editable:
+                yield RawEditor(self._value, id="cell-editor", soft_wrap=True)
+            else:
+                with VerticalScroll(id="cell-body"):
+                    yield Static(self._value or "[dim](empty)[/dim]", id="cell-value")
+            hint = (
+                "esc to keep the edit · ctrl+s to keep it and write the file"
+                if self._editable
+                else "esc to close"
+            )
+            yield Static(f"[dim]{hint}[/dim]", id="cell-hint")
+
+    def on_mount(self) -> None:
+        if self._editable:
+            self.query_one(RawEditor).focus()
+
+    @property
+    def _text(self) -> str:
+        return self.query_one(RawEditor).text
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_save_cell(self) -> None:
+        if self._editable:
+            self.dismiss((self._text, True))
+
+    def on_raw_editor_done(self, event: RawEditor.Done) -> None:
+        event.stop()
+        self.dismiss((event.editor.text, False))
 
 
 class HelpModal(ModalScreen[None]):
@@ -104,6 +170,7 @@ class MarkdownView(MarkdownViewer, can_focus=True, can_focus_children=True):
         Binding("g", "scroll_home", "top", show=False),
         Binding("G", "scroll_end", "bottom", show=False),
         Binding("t", "toggle_contents", "contents"),
+        Binding("i", "edit", "edit"),
     ]
 
     HELP = [
@@ -111,9 +178,14 @@ class MarkdownView(MarkdownViewer, can_focus=True, can_focus_children=True):
         ("pgup pgdn ctrl+u ctrl+d", "scroll a page"),
         ("g G home end", "top / bottom"),
         ("t", "toggle the table of contents"),
+        ("i", "edit the raw text (esc to render it again)"),
+        ("ctrl+s", "write the file"),
         ("?", "this help"),
         ("q", "quit"),
     ]
+
+    def action_edit(self) -> None:
+        self.app.enter_edit_mode()
 
     def action_toggle_contents(self) -> None:
         self.show_table_of_contents = not self.show_table_of_contents
@@ -131,12 +203,15 @@ class CodeView(VerticalScroll):
         Binding("ctrl+u", "page_up", "page up", show=False),
         Binding("g", "scroll_home", "top", show=False),
         Binding("G", "scroll_end", "bottom", show=False),
+        Binding("i", "edit", "edit"),
     ]
 
     HELP = [
         ("up down j k", "scroll a line"),
         ("pgup pgdn ctrl+u ctrl+d", "scroll a page"),
         ("g G home end", "top / bottom"),
+        ("i", "edit the raw text (esc to leave insert mode)"),
+        ("ctrl+s", "write the file"),
         ("?", "this help"),
         ("q", "quit"),
     ]
@@ -147,16 +222,23 @@ class CodeView(VerticalScroll):
         self._lexer = lexer
 
     def compose(self):
-        yield Static(
-            Syntax(
-                self._text,
-                self._lexer,
-                theme="ansi_dark",
-                background_color="default",
-                line_numbers=True,
-            ),
-            id="code",
+        yield Static(self._syntax(), id="code")
+
+    def _syntax(self) -> Syntax:
+        return Syntax(
+            self._text,
+            self._lexer,
+            theme="ansi_dark",
+            background_color="default",
+            line_numbers=True,
         )
+
+    def action_edit(self) -> None:
+        self.app.enter_edit_mode()
+
+    def update_text(self, text: str) -> None:
+        self._text = text
+        self.query_one("#code", Static).update(self._syntax())
 
 
 class TableView(Vertical):
@@ -177,6 +259,7 @@ class TableView(Vertical):
         Binding("s", "sort", "sort"),
         Binding("y", "copy_cell", "copy cell"),
         Binding("Y", "copy_row", "copy row", show=False),
+        Binding("i", "edit_cell", "edit"),
         Binding("escape", "cancel_search", "cancel", show=False),
     ]
 
@@ -190,6 +273,8 @@ class TableView(Vertical):
         ("n N", "next / previous match"),
         ("s", "sort by this column (asc, desc, original)"),
         ("y Y", "copy the cell / the row"),
+        ("i", "edit this cell (esc keeps the edit)"),
+        ("ctrl+s", "write the file"),
         ("?", "this help"),
         ("q", "quit"),
     ]
@@ -294,12 +379,37 @@ class TableView(Vertical):
         self._update_status()
 
     def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
-        coordinate = event.coordinate
         if not self.view_rows:
             return
+        self._open_cell(event.coordinate, editable=False)
+
+    def _open_cell(self, coordinate: Coordinate, *, editable: bool) -> None:
         column = self.columns[coordinate.column]
         position = f"row {coordinate.row + 1}, column {coordinate.column + 1}"
-        self.app.push_screen(CellModal(column, self.cell_value(coordinate), position))
+        modal = CellModal(
+            column, self.cell_value(coordinate), position, editable=editable
+        )
+        self.app.push_screen(
+            modal, lambda result: self._commit_cell(coordinate, result)
+        )
+
+    def _commit_cell(self, coordinate: Coordinate, result) -> None:
+        """Apply an edited value from the cell modal."""
+        if result is None:
+            return
+        value, write_file = result
+        if value != self.cell_value(coordinate):
+            # view_rows and source_rows share their row lists, so this edits both:
+            # the table keeps whatever sort order is on screen, the document keeps
+            # the file's own order.
+            self.view_rows[coordinate.row][coordinate.column] = value
+            self.table.update_cell_at(coordinate, _truncate(value), update_width=True)
+            self.app.mark_dirty()
+            if self._query:
+                self._matches = self._find_matches(self._query)
+            self._update_status("edited")
+        if write_file:
+            self.app.action_save()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "search":
@@ -385,6 +495,11 @@ class TableView(Vertical):
             self._run_search(self._query, announce=False)
         self._update_status()
 
+    def action_edit_cell(self) -> None:
+        if not self.view_rows:
+            return
+        self._open_cell(self.table.cursor_coordinate, editable=True)
+
     def action_copy_cell(self) -> None:
         value = self.cell_value(self.table.cursor_coordinate)
         copy_text(self.app, value)
@@ -407,18 +522,12 @@ class TableView(Vertical):
 
     def _run_search(self, query: str, *, announce: bool) -> None:
         self._query = query
-        needle = query.casefold()
-        if not needle:
+        if not query:
             self._matches = []
             self._update_status()
             return
 
-        self._matches = [
-            Coordinate(r, c)
-            for r, row in enumerate(self.view_rows)
-            for c, cell in enumerate(row)
-            if needle in cell.casefold()
-        ]
+        self._matches = self._find_matches(query)
         if not self._matches:
             self._update_status("no match")
             if announce:
@@ -427,6 +536,15 @@ class TableView(Vertical):
 
         self._match_index = 0
         self._goto_match()
+
+    def _find_matches(self, query: str) -> list[Coordinate]:
+        needle = query.casefold()
+        return [
+            Coordinate(r, c)
+            for r, row in enumerate(self.view_rows)
+            for c, cell in enumerate(row)
+            if needle in cell.casefold()
+        ]
 
     def _step_match(self, delta: int) -> None:
         if not self._matches:

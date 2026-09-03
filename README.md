@@ -10,8 +10,9 @@ lcat data.csv
 lcat records.json
 ```
 
-Markdown, CSV, TSV and JSON (including JSON Lines) are supported. When stdout is not a terminal
-(`lcat notes.md | less -R`) it prints a static render and exits, so it stays usable in a pipe.
+Markdown, CSV, TSV and JSON (including JSON Lines) are supported. Press `i` to edit what you are
+looking at and `ctrl+s` to write it back. When stdout is not a terminal (`lcat notes.md | less -R`)
+it prints a static render and exits, so it stays usable in a pipe.
 
 ## Install
 
@@ -38,7 +39,8 @@ lcat [FILE|-] [options]
 
 ## Keys
 
-Everywhere: `q` quit, `?` help, `ctrl+p` command palette (themes and commands).
+Everywhere: `i` edit, `ctrl+s` write the file, `q` quit, `?` help, `ctrl+p` command palette
+(themes and commands).
 
 Markdown / code view:
 
@@ -48,6 +50,7 @@ Markdown / code view:
 | `pgup` `pgdn` `ctrl+u` `ctrl+d` | scroll a page |
 | `g` `G` `home` `end` | top / bottom |
 | `t` | toggle the table of contents (markdown only) |
+| `i` | edit the raw text; `esc` renders it again |
 
 Table view:
 
@@ -61,6 +64,25 @@ Table view:
 | `/` then `n` / `N` | search cells, next / previous match |
 | `s` | sort by this column: ascending, descending, original |
 | `y` / `Y` | copy the cell / the row |
+| `i` | edit this cell in the full-value modal; `esc` keeps the edit |
+
+## Editing
+
+`i` is insert. In the markdown and JSON views it swaps the rendered page for the raw text, with
+line numbers; `esc` leaves insert mode and renders it again. In a table it opens the same modal
+`enter` uses to show a full cell value, but editable, so long or multi-line cells have room.
+
+Nothing touches the disk until you ask: `esc` keeps an edit in the buffer (`ctrl+z` inside the
+editor undoes), the subtitle shows `modified`, and `ctrl+s` writes the file — from inside the
+editor too. Quitting with unsaved edits asks first.
+
+Files are written in the format they were read from, through a temporary file in the same
+directory, so a failed write leaves the original alone. Saving normalizes as the parser saw the
+file: blank lines and ragged rows go, quoting is minimal, and a JSON table is re-indented with two
+spaces (one document per line for JSON Lines) with every record carrying the union of the keys.
+Cell types survive a round trip — a column that held numbers stays numbers, a column that held
+strings stays strings. `lcat -` cannot save (there is no file), and neither can a table loaded
+with `--max-rows`, which would write back only the head.
 
 ## Notes
 
@@ -80,4 +102,5 @@ Table view:
 uv sync
 uv run pytest -q
 uv run lcat samples/sample.csv
+uv run lcat samples/nested.json   # JSON that is not a table: the raw code view
 ```

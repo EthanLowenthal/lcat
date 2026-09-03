@@ -157,3 +157,184 @@ async def test_max_rows_is_reflected_in_the_subtitle():
     app = LcatApp(doc)
     async with app.run_test():
         assert "first 5 of 20 rows" in app.sub_title
+
+
+async def test_i_opens_the_raw_text_and_escape_renders_it_again():
+    app = LcatApp(load("# Title\n", "md"))
+    async with app.run_test() as pilot:
+        view = app.query_one("#view")
+        await pilot.press("i")
+        editor = app.query_one("#editor")
+        assert editor.display and not view.display
+        assert editor.has_focus
+        assert app.editing and "INSERT" in app.sub_title
+        await pilot.press("x")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not editor.display and view.display
+        assert not app.editing
+        assert app.doc.text == "x# Title\n"
+        assert app.dirty and "modified" in app.sub_title
+
+
+async def test_leaving_the_editor_unchanged_leaves_the_document_clean():
+    app = LcatApp(load("# Title\n", "md"))
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not app.dirty
+        assert app.doc.text == "# Title\n"
+
+
+async def test_code_view_is_editable_too():
+    app = LcatApp(load('[[1, 2], {"a": 1}]', "json"))
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        editor = app.query_one("#editor")
+        editor.text = "[]"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.doc.text == "[]"
+        assert app.dirty
+
+
+async def test_i_edits_a_cell_and_escape_keeps_the_edit():
+    app = table_app()
+    async with app.run_test() as pilot:
+        view = app.query_one(TableView)
+        await pilot.press("right", "i")
+        assert isinstance(app.screen, CellModal)
+        await pilot.press("X")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, CellModal)
+        assert view.view_rows[0][1] == "XCharlie"
+        assert view.source_rows[0][1] == "XCharlie"
+        assert app.query_one(DataTable).get_cell_at(Coordinate(0, 1)) == "XCharlie"
+        assert app.dirty
+
+
+async def test_editing_a_cell_follows_the_row_through_a_sort():
+    app = table_app()
+    async with app.run_test() as pilot:
+        view = app.query_one(TableView)
+        await pilot.press("s")  # ascending by id: the "1,alpha,200" row is first
+        await pilot.press("right", "i")
+        app.screen.query_one("#cell-editor").text = "omega"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert view.view_rows[0][1] == "omega"
+        assert view.source_rows[1][1] == "omega"  # its place in the file is unchanged
+
+
+async def test_escape_on_an_unedited_cell_changes_nothing():
+    app = table_app()
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not app.dirty
+
+
+async def test_ctrl_s_writes_the_file(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text(CSV)
+    app = LcatApp(load(CSV, "csv", path))
+    async with app.run_test() as pilot:
+        await pilot.press("right", "i")
+        app.screen.query_one("#cell-editor").text = "Charles"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.dirty
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert path.read_text() == CSV.replace("Charlie", "Charles")
+        assert not app.dirty
+        assert "modified" not in app.sub_title
+
+
+async def test_ctrl_s_inside_the_cell_editor_commits_then_writes(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text(CSV)
+    app = LcatApp(load(CSV, "csv", path))
+    async with app.run_test() as pilot:
+        await pilot.press("right", "i")
+        app.screen.query_one("#cell-editor").text = "Charles"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert path.read_text() == CSV.replace("Charlie", "Charles")
+        assert not app.dirty
+
+
+async def test_ctrl_s_writes_markdown_from_inside_the_editor(tmp_path):
+    path = tmp_path / "notes.md"
+    path.write_text("# Title\n")
+    app = LcatApp(load("# Title\n", "md", path))
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        app.query_one("#editor").text = "# Other\n"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert path.read_text() == "# Other\n"
+        assert app.editing  # still in insert mode, the write does not interrupt
+
+
+async def test_saving_stdin_reports_that_there_is_no_file():
+    app = LcatApp(load(CSV, "csv"))
+    notes = []
+    async with app.run_test() as pilot:
+        app.notify = lambda message, **kwargs: notes.append(message)
+        await pilot.press("i")
+        app.screen.query_one("#cell-editor").text = "Charles"
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert any("stdin" in note for note in notes)
+        assert app.dirty
+
+
+async def test_quitting_with_unsaved_edits_asks_first():
+    from lcat.app import QuitModal
+
+    app = LcatApp(load(CSV, "csv"))
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press("X")
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("q")
+        assert isinstance(app.screen, QuitModal)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, QuitModal)
+        assert app.is_running
+
+
+async def test_a_clean_document_quits_straight_away():
+    app = table_app()
+    async with app.run_test() as pilot:
+        await pilot.press("q")
+        await pilot.pause()
+        assert not app.is_running
+
+
+async def test_keys_that_are_shortcuts_outside_the_editor_are_typed_inside_it():
+    app = LcatApp(load("# Title\n", "md"))
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await pilot.press("q", "t", "question_mark")
+        assert app.is_running
+        assert app.query_one("#editor").text == "qt?# Title\n"
+
+
+async def test_enter_inserts_a_newline_in_a_cell_instead_of_closing():
+    app = table_app()
+    async with app.run_test() as pilot:
+        await pilot.press("right", "i")
+        await pilot.press("enter")
+        assert isinstance(app.screen, CellModal)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.query_one(TableView).view_rows[0][1] == "\nCharlie"

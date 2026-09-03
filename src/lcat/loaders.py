@@ -18,12 +18,39 @@ class MarkdownDoc:
 
 
 @dataclass
+class DelimitedFormat:
+    """How a table was parsed out of a CSV/TSV file, so it can be written back."""
+
+    delimiter: str = ","
+    has_header: bool = True
+
+
+@dataclass
+class JsonFormat:
+    """How a table was flattened out of JSON, so it can be written back."""
+
+    shape: str
+    """One of records, rows, scalars, keyvalue."""
+    lines: bool = False
+    """The source was JSON Lines: one document per line."""
+    text_columns: tuple[bool, ...] = ()
+    """Per column: the source values were strings, so edits stay strings."""
+    text_rows: tuple[bool, ...] = ()
+    """Same, per row, for a key/value table: one JSON object has a type per key."""
+
+
+TableFormat = DelimitedFormat | JsonFormat
+
+
+@dataclass
 class TableDoc:
     columns: list[str]
     rows: list[list[str]] = field(default_factory=list)
     path: Path | None = None
     total_rows: int | None = None
     """Row count before `--max-rows` trimmed it, when it did."""
+    fmt: TableFormat = field(default_factory=DelimitedFormat)
+    """The source format, used to serialize the table again after an edit."""
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -33,7 +60,9 @@ class TableDoc:
         """This table, trimmed to `max_rows`, remembering the original count."""
         if max_rows is None or len(self.rows) <= max_rows:
             return self
-        return TableDoc(self.columns, self.rows[:max_rows], self.path, len(self.rows))
+        return TableDoc(
+            self.columns, self.rows[:max_rows], self.path, len(self.rows), self.fmt
+        )
 
 
 @dataclass
@@ -71,10 +100,11 @@ def load_delimited(
 ) -> TableDoc:
     if delimiter is None:
         delimiter = sniff_delimiter(text[:8192])
+    fmt = DelimitedFormat(delimiter, has_header)
     raw = list(csv.reader(io.StringIO(text), delimiter=delimiter))
     raw = [row for row in raw if row and any(cell.strip() for cell in row)]
     if not raw:
-        return TableDoc([], [], path)
+        return TableDoc([], [], path, fmt=fmt)
 
     width = max(len(row) for row in raw)
     if has_header:
@@ -86,7 +116,7 @@ def load_delimited(
         body = raw
 
     rows = [row[:width] + [""] * (width - len(row)) for row in body]
-    return TableDoc(columns, rows, path)
+    return TableDoc(columns, rows, path, fmt=fmt)
 
 
 def load_json(text: str, path: Path | None = None) -> TableDoc | CodeDoc:
@@ -104,20 +134,33 @@ def load_json(text: str, path: Path | None = None) -> TableDoc | CodeDoc:
                         seen.add(key)
                         columns.append(key)
             rows = [[_cell(item.get(key)) for key in columns] for item in data]
-            return TableDoc(columns, rows, path)
+            texts = tuple(
+                any(isinstance(item.get(key), str) for item in data) for key in columns
+            )
+            fmt = JsonFormat("records", is_lines, texts)
+            return TableDoc(columns, rows, path, fmt=fmt)
         if all(isinstance(item, list) for item in data):
             width = max((len(item) for item in data), default=0)
             columns = [f"col{i + 1}" for i in range(width)]
             rows = [
                 [_cell(v) for v in item] + [""] * (width - len(item)) for item in data
             ]
-            return TableDoc(columns, rows, path)
+            texts = tuple(
+                any(i < len(item) and isinstance(item[i], str) for item in data)
+                for i in range(width)
+            )
+            fmt = JsonFormat("rows", is_lines, texts)
+            return TableDoc(columns, rows, path, fmt=fmt)
         if all(not isinstance(item, (dict, list)) for item in data):
-            return TableDoc(["value"], [[_cell(item)] for item in data], path)
+            texts = (any(isinstance(item, str) for item in data),)
+            fmt = JsonFormat("scalars", is_lines, texts)
+            return TableDoc(["value"], [[_cell(item)] for item in data], path, fmt=fmt)
 
     if isinstance(data, dict) and data and not is_lines:
         rows = [[key, _cell(value)] for key, value in data.items()]
-        return TableDoc(["key", "value"], rows, path)
+        per_key = tuple(isinstance(value, str) for value in data.values())
+        fmt = JsonFormat("keyvalue", False, (True, False), per_key)
+        return TableDoc(["key", "value"], rows, path, fmt=fmt)
 
     pretty = json.dumps(data, indent=2, ensure_ascii=False)
     return CodeDoc(pretty, "json", path)

@@ -28,6 +28,23 @@ DataTable {
     background: $boost;
 }
 
+/* --- raw text editor (i) --- */
+
+#editor {
+    height: 1fr;
+    border: none;
+    padding: 0 1;
+}
+
+#cell-editor {
+    height: auto;
+    min-height: 3;
+    max-height: 16;
+    border: none;
+    padding: 0;
+    background: $boost;
+}
+
 /* --- code view --- */
 
 CodeView {
@@ -36,12 +53,12 @@ CodeView {
 
 /* --- modals --- */
 
-CellModal, HelpModal {
+CellModal, HelpModal, QuitModal {
     align: center middle;
     background: $background 60%;
 }
 
-#cell-dialog, #help-dialog {
+#cell-dialog, #help-dialog, #quit-dialog {
     width: 80%;
     max-width: 100;
     height: auto;
@@ -51,7 +68,7 @@ CellModal, HelpModal {
     border: round $primary;
 }
 
-#cell-title, #help-title {
+#cell-title, #help-title, #quit-title {
     height: auto;
     padding-bottom: 1;
 }
@@ -62,7 +79,17 @@ CellModal, HelpModal {
 }
 
 #cell-hint {
-    height: 1;
+    /* border-box: the padding has to be inside the height, or the line is clipped */
+    height: 2;
     padding-top: 1;
     color: $text-muted;
+}
+
+#quit-dialog {
+    max-width: 44;
+    border: round $warning;
+}
+
+#quit-body {
+    height: auto;
 }
