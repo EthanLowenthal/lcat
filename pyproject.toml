@@ -13,7 +13,10 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Utilities",
 ]
-dependencies = ["textual>=8.0,<9"]
+dependencies = [
+    "textual>=8.0,<9",
+    "textual-image>=0.12,<1",
+]
 
 [project.urls]
 Homepage = "https://github.com/EthanLowenthal/lcat"

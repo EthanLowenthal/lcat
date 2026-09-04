@@ -35,6 +35,19 @@ def greet(name: str) -> str:
 
 > Piping still works: `lcat notes.md | less -R`.
 
+### An image
+
+Local images render as pictures when the terminal can draw them (Sixel, kitty, or
+coloured half-cells otherwise); remote ones stay as text.
+
+![a gradient with two shapes](sample.png)
+
+### Links
+
+Links open in the browser when clicked, and terminals that understand hyperlinks let you
+cmd/ctrl-click them directly: [Textual](https://textual.textualize.io),
+[the source](https://github.com/EthanLowenthal/lcat), or a heading in this file: [Why](#why).
+
 ## Long section
 
 Paragraph one, here to make the document long enough that scrolling actually does something

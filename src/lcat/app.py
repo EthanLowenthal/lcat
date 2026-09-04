@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Callable
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -9,9 +12,16 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Static
 
-from lcat.loaders import CodeDoc, Document, MarkdownDoc, TableDoc
+from lcat.loaders import CodeDoc, Document, ImageDoc, MarkdownDoc, TableDoc
 from lcat.save import SaveError, save
-from lcat.views import CodeView, HelpModal, MarkdownView, RawEditor, TableView
+from lcat.views import (
+    CodeView,
+    HelpModal,
+    ImageView,
+    MarkdownView,
+    RawEditor,
+    TableView,
+)
 
 
 class QuitModal(ModalScreen["str | None"]):
@@ -37,6 +47,14 @@ class QuitModal(ModalScreen["str | None"]):
         self.dismiss(None if choice == "cancel" else choice)
 
 
+Reloader = Callable[[], Document]
+"""Re-reads the file the document came from, with the same options. Raises OSError,
+ValueError or UnicodeError when it cannot."""
+
+POLL_SECONDS = 1.0
+"""How often the file is checked for changes while auto-reload is on."""
+
+
 class LcatApp(App[None]):
     """Render one document interactively."""
 
@@ -47,31 +65,60 @@ class LcatApp(App[None]):
         Binding("q", "try_quit", "quit"),
         Binding("question_mark", "help", "help"),
         Binding("ctrl+s", "save", "save"),
+        Binding("r", "reload", "reload", show=False),
+        Binding("R", "toggle_reload", "auto-reload"),
     ]
 
     dirty: reactive[bool] = reactive(False)
     """The document has edits that are not on disk yet."""
 
-    def __init__(self, doc: Document, encoding: str = "utf-8") -> None:
+    def __init__(
+        self,
+        doc: Document,
+        encoding: str = "utf-8",
+        *,
+        images: bool = True,
+        reload: Reloader | None = None,
+        auto_reload: bool = True,
+    ) -> None:
         super().__init__()
         self.doc = doc
         self.encoding = encoding
+        self.images = images
+        """Render markdown images as pictures (--no-images turns this off)."""
         self.editing = False
         self._rendered_text = getattr(doc, "text", "")
+        self._reload = reload
+        self.auto_reload = auto_reload and reload is not None
+        """Pick up changes to the file on disk as they happen (`R` toggles)."""
+        self._disk_stamp = self._stat()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
+        yield from self._view_widgets()
+        yield Footer()
+
+    def _view_widgets(self) -> ComposeResult:
+        """The view for `self.doc`, plus the hidden raw editor where there is text."""
         if isinstance(self.doc, MarkdownDoc):
-            yield MarkdownView(self.doc.text, show_table_of_contents=False, id="view")
+            base = self.doc.path.parent if self.doc.path else None
+            yield MarkdownView(
+                self.doc.text,
+                show_table_of_contents=False,
+                base=base,
+                images=self.images,
+                id="view",
+            )
             yield self._editor()
         elif isinstance(self.doc, TableDoc):
             yield TableView(self.doc.columns, self.doc.rows, id="view")
         elif isinstance(self.doc, CodeDoc):
             yield CodeView(self.doc.text, self.doc.lexer, id="view")
             yield self._editor()
+        elif isinstance(self.doc, ImageDoc):
+            yield ImageView(self.doc.image, id="view")
         else:  # pragma: no cover - guarded by the CLI
             raise TypeError(f"cannot display {type(self.doc).__name__}")
-        yield Footer()
 
     def _editor(self) -> RawEditor:
         """The raw-text editor for markdown and code, hidden until `i`."""
@@ -81,9 +128,100 @@ class LcatApp(App[None]):
 
     def on_mount(self) -> None:
         self._refresh_subtitle()
+        self._focus_view()
+        if self._reload is not None:
+            self.set_interval(POLL_SECONDS, self._poll_disk)
+
+    def _focus_view(self) -> None:
         view = self.query_one("#view")
         if view.can_focus:
             view.focus()
+
+    # -- reloading -------------------------------------------------------
+
+    def _stat(self) -> tuple[int, int] | None:
+        """(mtime, size) of the file on disk, or None if it cannot be read right now."""
+        path = self.doc.path
+        if path is None:
+            return None
+        try:
+            info = os.stat(path)
+        except OSError:
+            return None
+        return info.st_mtime_ns, info.st_size
+
+    async def _poll_disk(self) -> None:
+        """Called on a timer: reload if the file changed and nothing would be lost."""
+        if not self.auto_reload:
+            return
+        stamp = self._stat()
+        if stamp is None or stamp == self._disk_stamp:
+            return
+        self._disk_stamp = stamp
+        if self.editing or self.dirty:
+            self.notify(
+                "changed on disk; not reloading over unsaved edits (r discards them)",
+                severity="warning",
+                timeout=4,
+            )
+            return
+        await self.reload_from_disk()
+
+    async def reload_from_disk(self) -> None:
+        """Re-read the file and show it, dropping any unsaved edits."""
+        if self._reload is None:
+            self.notify("nothing to reload: the input came from stdin", timeout=2)
+            return
+        try:
+            doc = self._reload()
+        except (OSError, ValueError, UnicodeError) as error:
+            self.notify(f"reload failed: {error}", severity="error", timeout=5)
+            return
+        self._disk_stamp = self._stat()
+        had_edits = self.dirty or self.editing
+        await self._show(doc)
+        self.notify("reloaded, edits discarded" if had_edits else "reloaded", timeout=2)
+
+    async def _show(self, doc: Document) -> None:
+        """Replace the document, updating the view in place when its kind is unchanged
+        so the cursor and scroll position survive; otherwise swap the view out."""
+        view = self.query_one("#view")
+        same_kind = type(doc) is type(self.doc)
+        self.doc = doc
+        self.editing = False
+        self.dirty = False
+        if same_kind and isinstance(doc, (MarkdownDoc, CodeDoc)):
+            editor = self.query_one("#editor", RawEditor)
+            editor.display = False
+            editor.text = doc.text
+            view.display = True
+            self._rendered_text = doc.text
+            if isinstance(view, MarkdownView):
+                await view.document.update(doc.text)
+            else:
+                view.update_text(doc.text)
+        elif same_kind and isinstance(doc, TableDoc):
+            view.replace(doc.columns, doc.rows)
+        elif same_kind and isinstance(doc, ImageDoc):
+            view.set_image(doc.image)
+        else:
+            await self.query("#view, #editor").remove()
+            await self.mount_all(list(self._view_widgets()), before=self.query_one(Footer))
+        self._focus_view()
+        self._refresh_subtitle()
+
+    def action_reload(self) -> None:
+        self.run_worker(self.reload_from_disk(), exclusive=True, group="reload")
+
+    def action_toggle_reload(self) -> None:
+        if self._reload is None:
+            self.notify("auto-reload needs a file: the input came from stdin", timeout=3)
+            return
+        self.auto_reload = not self.auto_reload
+        if self.auto_reload:
+            self._disk_stamp = self._stat()
+        self._refresh_subtitle()
+        self.notify(f"auto-reload {'on' if self.auto_reload else 'off'}", timeout=2)
 
     # -- title -----------------------------------------------------------
 
@@ -96,6 +234,10 @@ class LcatApp(App[None]):
             else:
                 shape = f"{rows:,} rows × {cols} cols"
             return f"{path.name} · {shape}" if path else shape
+        if isinstance(self.doc, ImageDoc):
+            width, height = self.doc.size
+            about = f"{width}×{height} px · {self.doc.format}"
+            return f"{path.name} · {about}" if path else about
         if path is not None:
             return path.name
         return "stdin"
@@ -106,6 +248,8 @@ class LcatApp(App[None]):
             parts.append("INSERT")
         if self.dirty:
             parts.append("modified")
+        if self.auto_reload:
+            parts.append("watching")
         self.sub_title = " · ".join(parts)
 
     def watch_dirty(self, dirty: bool) -> None:
@@ -171,6 +315,7 @@ class LcatApp(App[None]):
             self.notify(f"could not write: {error}", severity="error", timeout=5)
             return
         self.dirty = False
+        self._disk_stamp = self._stat()  # our own write is not a change to pick up
         self.notify(f"wrote {path.name}", timeout=2)
 
     def action_try_quit(self) -> None:

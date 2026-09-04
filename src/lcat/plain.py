@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 
 from rich import box
 from rich.console import Console
@@ -11,7 +12,8 @@ from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.table import Table
 
-from lcat.loaders import CodeDoc, Document, MarkdownDoc, TableDoc
+from lcat.images import natural_cells
+from lcat.loaders import CodeDoc, Document, ImageDoc, MarkdownDoc, TableDoc
 
 
 def _width() -> int:
@@ -35,6 +37,10 @@ def render(doc: Document) -> None:
         )
         return
 
+    if isinstance(doc, ImageDoc):
+        _render_image(doc, console)
+        return
+
     if isinstance(doc, TableDoc):
         if not doc.columns:
             console.print("[dim](empty table)[/dim]")
@@ -51,3 +57,18 @@ def render(doc: Document) -> None:
         return
 
     raise TypeError(f"cannot render {type(doc).__name__}")
+
+
+def _render_image(doc: ImageDoc, console: Console) -> None:
+    """Inline pixels on a terminal (`lcat -p photo.png`), a one-line summary in a pipe."""
+    width, height = doc.size
+    name = doc.path.name if doc.path else "stdin"
+    if not sys.stdout.isatty():
+        console.print(f"{name}: {doc.format} image, {width}×{height} px")
+        return
+
+    # Importing textual_image asks the terminal which graphics protocol it speaks.
+    from textual_image.renderable import Image
+
+    cells_wide, _ = natural_cells(width, height)
+    console.print(Image(doc.image, width=min(cells_wide, console.width), height="auto"))

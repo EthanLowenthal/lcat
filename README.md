@@ -1,18 +1,22 @@
 # lcat
 
 A `cat` that renders. Point it at a markdown file and get styled, scrollable prose with a
-table-of-contents jump list; point it at a CSV and get a full-screen table you can walk with the
-arrow keys, search, sort, and copy from.
+table-of-contents jump list, clickable links and inline images; point it at a CSV and get a
+full-screen table you can walk with the arrow keys, search, sort, and copy from; point it at a
+PNG and see the picture.
 
 ```
 lcat notes.md
 lcat data.csv
 lcat records.json
+lcat photo.png
 ```
 
-Markdown, CSV, TSV and JSON (including JSON Lines) are supported. Press `i` to edit what you are
-looking at and `ctrl+s` to write it back. When stdout is not a terminal (`lcat notes.md | less -R`)
-it prints a static render and exits, so it stays usable in a pipe.
+Markdown, CSV, TSV, JSON (including JSON Lines) and PNG/JPEG/GIF/BMP/WebP/TIFF images are
+supported. Press `i` to edit what you are looking at and `ctrl+s` to write it back. The view
+follows the file: when something else writes it, lcat reloads it in place (`R` toggles this,
+`r` reloads on demand). When stdout is not a terminal (`lcat notes.md | less -R`) it prints a
+static render and exits, so it stays usable in a pipe.
 
 ## Install
 
@@ -26,21 +30,23 @@ uv tool install .
 ```
 lcat [FILE|-] [options]
 
-  --mode {auto,md,csv,tsv,json}   force a renderer (default: auto, by extension then sniffing)
+  --mode {auto,md,csv,tsv,json,img}   force a renderer (default: auto, by extension then sniffing)
   -p, --plain                     static render to stdout instead of the interactive view
   -d, --delimiter CHAR            delimiter for csv/tsv (default: sniffed)
   --no-header                     treat the first row as data, name columns col1..colN
   --encoding ENC                  input encoding (default: utf-8)
   --max-rows N                    show only the first N rows of a table
+  --no-images                     show markdown images as their alt text
+  --no-reload                     start with auto-reload off
   --version
 ```
 
-`-` reads from stdin: `psql -Atc '...' | lcat - --mode csv`.
+`-` reads from stdin: `psql -Atc '...' | lcat - --mode csv`, `curl -s .../chart.png | lcat -`.
 
 ## Keys
 
-Everywhere: `i` edit, `ctrl+s` write the file, `q` quit, `?` help, `ctrl+p` command palette
-(themes and commands).
+Everywhere: `i` edit, `ctrl+s` write the file, `r` reload from disk, `R` toggle auto-reload,
+`q` quit, `?` help, `ctrl+p` command palette (themes and commands).
 
 Markdown / code view:
 
@@ -50,6 +56,7 @@ Markdown / code view:
 | `pgup` `pgdn` `ctrl+u` `ctrl+d` | scroll a page |
 | `g` `G` `home` `end` | top / bottom |
 | `t` | toggle the table of contents (markdown only) |
+| click a link | open it in the browser (`#anchors` scroll to the heading) |
 | `i` | edit the raw text; `esc` renders it again |
 
 Table view:
@@ -65,6 +72,15 @@ Table view:
 | `s` | sort by this column: ascending, descending, original |
 | `y` / `Y` | copy the cell / the row |
 | `i` | edit this cell in the full-value modal; `esc` keeps the edit |
+
+Image view:
+
+| Key | Action |
+| --- | --- |
+| `z` | toggle fit-to-window / actual size |
+| arrows / `h` `j` `k` `l` | scroll (at actual size) |
+| `pgup` `pgdn` `ctrl+u` `ctrl+d` | scroll a page |
+| `g` `G` `home` `end` | top / bottom |
 
 ## Editing
 
@@ -84,11 +100,47 @@ Cell types survive a round trip — a column that held numbers stays numbers, a 
 strings stays strings. `lcat -` cannot save (there is no file), and neither can a table loaded
 with `--max-rows`, which would write back only the head.
 
+## Following the file
+
+Once a second lcat checks the file's modification time and size, and when they change it
+reads the file again with the same options and updates the view in place: the table keeps its
+cursor, sort is reset, the search is re-run, markdown and code keep their scroll position, and
+an image keeps its zoom. If the file turns into a different kind of document (a JSON table
+that stops being tabular, say) the view is swapped. The subtitle shows `watching` while this
+is on; `R` toggles it and `--no-reload` starts with it off.
+
+Unsaved edits are never overwritten: if the file changes while the subtitle says `modified`
+(or while you are in insert mode) lcat only warns. `r` is the explicit reload and discards the
+edits. Your own `ctrl+s` is not treated as a change, and a file that cannot be read mid-write
+(a half-written image, an empty file) leaves the old view up with an error notification. Input
+from stdin has no file to watch.
+
+## Images and links
+
+Images are drawn with real pixels where the terminal can: Sixel (iTerm2, WezTerm, foot,
+mlterm, recent xterm) or the kitty graphics protocol, detected by asking the terminal on
+startup. Anywhere else they fall back to coloured half-cell blocks, which is still a
+recognisable picture. Fit-to-window never scales an image up past one image pixel per screen
+pixel; `z` switches to actual size and scrolls.
+
+In markdown, a paragraph that is only an image (or several, one per line) becomes the picture,
+sized to its own pixels or the window, whichever is smaller. Sources are resolved relative to
+the markdown file. Remote images and images mixed into a sentence keep Textual's text form,
+`🖼 (alt text)`, as does everything with `--no-images`.
+
+Links are clickable: URLs open in the default browser, relative paths open as `file://` URLs,
+and `#anchor` links scroll to the heading. Link text also carries an OSC 8 hyperlink, so
+terminals that support them (iTerm2, kitty, WezTerm, GNOME Terminal, Windows Terminal) let you
+cmd/ctrl-click straight through without lcat's help; others ignore it.
+
+`lcat -p photo.png` on a terminal prints the picture inline and exits, like `imgcat`. In a pipe
+it prints a one-line summary (`photo.png: PNG image, 480×270 px`).
+
 ## Notes
 
 - Format detection is by extension first, then by content, so extensionless files and stdin
   still land in the right view. A markdown pipe table is treated as markdown, not as
-  pipe-delimited data.
+  pipe-delimited data, and image files are recognised by their magic bytes.
 - Textual's `DataTable` measures every cell it is handed, so very large tables are streamed in
   batches: the first screenful appears immediately and the status line shows the progress. A
   50k-row, 10 MB CSV paints in about a quarter of a second and finishes loading in about two and
@@ -103,4 +155,6 @@ uv sync
 uv run pytest -q
 uv run lcat samples/sample.csv
 uv run lcat samples/nested.json   # JSON that is not a table: the raw code view
+uv run lcat samples/sample.md     # includes an image and links
+uv run lcat samples/sample.png
 ```

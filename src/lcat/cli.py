@@ -9,13 +9,13 @@ from pathlib import Path
 
 from lcat import __version__
 from lcat.detect import MODES, SNIFF_BYTES, resolve_mode
-from lcat.loaders import TableDoc, load
+from lcat.loaders import Document, TableDoc, load, load_image
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lcat",
-        description="Render markdown, CSV/TSV and JSON files in the terminal.",
+        description="Render markdown, CSV/TSV, JSON and image files in the terminal.",
     )
     parser.add_argument("file", help="file to view, or - for stdin")
     parser.add_argument(
@@ -50,6 +50,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="show only the first N rows of a table",
     )
+    parser.add_argument(
+        "--no-images",
+        action="store_true",
+        help="show markdown images as their alt text instead of rendering them",
+    )
+    parser.add_argument(
+        "--no-reload",
+        action="store_true",
+        help="start with auto-reload off (R toggles it in the viewer)",
+    )
     parser.add_argument("--version", action="version", version=f"lcat {__version__}")
     return parser
 
@@ -60,10 +70,9 @@ def _fail(message: str) -> int:
     return 2
 
 
-def _read_source(target: str, encoding: str) -> tuple[str, Path | None]:
+def _read_source(target: str) -> tuple[bytes, Path | None]:
     if target == "-":
-        data = sys.stdin.buffer.read()
-        return data.decode(encoding, errors="replace"), None
+        return sys.stdin.buffer.read(), None
 
     path = Path(target)
     if not path.exists():
@@ -74,7 +83,7 @@ def _read_source(target: str, encoding: str) -> tuple[str, Path | None]:
         data = path.read_bytes()
     except OSError as error:
         raise SystemExit(_fail(f"lcat: {target}: {error.strerror or error}")) from error
-    return data.decode(encoding, errors="replace"), path
+    return data, path
 
 
 def _reopen_tty() -> bool:
@@ -87,25 +96,37 @@ def _reopen_tty() -> bool:
     return True
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-
-    text, path = _read_source(args.file, args.encoding)
-    if not text.strip():
-        print(f"lcat: {args.file}: empty file", file=sys.stderr)
-        return 0
-
-    mode = resolve_mode(path, args.mode, text[:SNIFF_BYTES])
+def _build(raw: bytes, path: Path | None, mode: str, args: argparse.Namespace) -> Document:
+    """Turn file bytes into a document with the options given on the command line."""
+    if mode == "img":
+        return load_image(raw, path)
     doc = load(
-        text,
+        raw.decode(args.encoding, errors="replace"),
         mode,
         path=path,
         delimiter=args.delimiter,
         has_header=not args.no_header,
     )
-
     if isinstance(doc, TableDoc):
         doc = doc.head(args.max_rows)
+    return doc
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+
+    raw, path = _read_source(args.file)
+    if not raw.strip():
+        print(f"lcat: {args.file}: empty file", file=sys.stderr)
+        return 0
+
+    head = raw[:SNIFF_BYTES]
+    sample = head.decode(args.encoding, errors="replace")
+    mode = resolve_mode(path, args.mode, sample, head)
+    try:
+        doc = _build(raw, path, mode, args)
+    except ValueError as error:
+        return _fail(f"lcat: {args.file}: {error}")
 
     if isinstance(doc, TableDoc) and not doc.columns:
         print(f"lcat: {args.file}: no rows to show", file=sys.stderr)
@@ -127,7 +148,21 @@ def main(argv: list[str] | None = None) -> int:
 
     from lcat.app import LcatApp
 
-    LcatApp(doc, encoding=args.encoding).run()
+    def reload() -> Document:
+        """Read the file again, the same way. `path` is set: stdin cannot reload."""
+        assert path is not None
+        data = path.read_bytes()
+        if not data.strip():
+            raise ValueError("the file is empty")
+        return _build(data, path, mode, args)
+
+    LcatApp(
+        doc,
+        encoding=args.encoding,
+        images=not args.no_images,
+        reload=reload if path is not None else None,
+        auto_reload=not args.no_reload,
+    ).run()
     return 0
 
 

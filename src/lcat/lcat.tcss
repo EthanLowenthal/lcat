@@ -51,6 +51,17 @@ CodeView {
     padding: 0 1;
 }
 
+/* --- image view --- */
+
+ImageView {
+    align: center middle;
+}
+
+.markdown-image {
+    width: auto;
+    height: auto;
+}
+
 /* --- modals --- */
 
 CellModal, HelpModal, QuitModal {

@@ -9,7 +9,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-MODES = ("auto", "md", "csv", "tsv", "json")
+MODES = ("auto", "md", "csv", "tsv", "json", "img")
 
 _EXTENSIONS = {
     ".md": "md",
@@ -22,6 +22,14 @@ _EXTENSIONS = {
     ".json": "json",
     ".jsonl": "json",
     ".ndjson": "json",
+    ".png": "img",
+    ".jpg": "img",
+    ".jpeg": "img",
+    ".bmp": "img",
+    ".gif": "img",
+    ".webp": "img",
+    ".tif": "img",
+    ".tiff": "img",
 }
 
 SNIFF_BYTES = 8192
@@ -32,6 +40,15 @@ _MIN_AGREEMENT = 0.8
 
 _MD_TABLE_RULE = re.compile(r"^\s*\|?[\s:-]*\|[\s:|-]*$")
 """The `|---|---|` rule under a markdown table header."""
+
+_IMAGE_MAGIC = (
+    b"\x89PNG\r\n\x1a\n",
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF87a",
+    b"GIF89a",
+    b"II*\x00",  # TIFF, little endian
+    b"MM\x00*",  # TIFF, big endian
+)
 
 
 def mode_from_extension(path: Path) -> str | None:
@@ -79,6 +96,17 @@ def sniff_delimiter(sample: str, default: str = ",") -> str:
     return best_delimiter(sample) or default
 
 
+def is_image(data: bytes) -> bool:
+    """True if `data` starts like one of the raster formats the image view reads."""
+    if data.startswith(_IMAGE_MAGIC):
+        return True
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return True
+    # BMP: "BM", then the four reserved bytes after the file size are zero. "BM" on
+    # its own would catch text that happens to start with those letters.
+    return len(data) >= 14 and data[:2] == b"BM" and data[6:10] == b"\x00\x00\x00\x00"
+
+
 def sniff_mode(sample: str) -> str:
     """Guess a mode from the head of a file. Falls back to markdown."""
     stripped = sample.strip()
@@ -105,12 +133,20 @@ def sniff_mode(sample: str) -> str:
     return "md"
 
 
-def resolve_mode(path: Path | None, explicit: str, sample: str) -> str:
-    """Resolve the render mode. `explicit` is one of MODES; `path` is None for stdin."""
+def resolve_mode(
+    path: Path | None, explicit: str, sample: str, raw: bytes | None = None
+) -> str:
+    """Resolve the render mode. `explicit` is one of MODES; `path` is None for stdin.
+
+    `sample` is the decoded head of the file; `raw`, when given, is the same head
+    as bytes so image files without an extension are still recognised.
+    """
     if explicit != "auto":
         return explicit
     if path is not None:
         by_ext = mode_from_extension(path)
         if by_ext is not None:
             return by_ext
+    if raw is not None and is_image(raw):
+        return "img"
     return sniff_mode(sample)

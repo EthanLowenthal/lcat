@@ -1,20 +1,35 @@
-"""The interactive views: markdown, table and code."""
+"""The interactive views: markdown, table, code and image."""
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.syntax import Syntax
 from textual import events
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import ScrollableContainer, Vertical, VerticalScroll
+from textual.content import Content, Span
 from textual.coordinate import Coordinate
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Input, MarkdownViewer, Static, TextArea
+from textual.style import Style
+from textual.widget import Widget
+from textual.widgets import DataTable, Input, Markdown, MarkdownViewer, Static, TextArea
+from textual.widgets.markdown import MarkdownBlock, MarkdownTableOfContents
+from textual_image.widget import Image as TerminalImage
+
+from lcat.images import browser_url, local_path, natural_cells
+
+if TYPE_CHECKING:  # pragma: no cover
+    from markdown_it.token import Token
+    from PIL.Image import Image as PILImage
 
 CELL_WIDTH = 60
 """Cells wider than this are truncated for display; `enter` shows the full value."""
@@ -159,8 +174,141 @@ class HelpModal(ModalScreen[None]):
             yield Static("[dim]esc to close[/dim]", id="cell-hint")
 
 
+# -- markdown: hyperlinks and inline images ----------------------------------
+
+_LINK_ACTION = re.compile(r"^link\((.*)\)$", re.DOTALL)
+"""The `@click` action Textual attaches to a markdown link: `link('href')`."""
+
+_IMAGE_RUN_FILLER = {"softbreak", "hardbreak"}
+
+
+def _href_from_action(action: object) -> str | None:
+    if not isinstance(action, str):
+        return None
+    match = _LINK_ACTION.match(action)
+    if match is None:
+        return None
+    try:
+        href = ast.literal_eval(match.group(1))
+    except (ValueError, SyntaxError):
+        return None
+    return href if isinstance(href, str) else None
+
+
+def hyperlinked(content: Content, base: Path) -> Content:
+    """Give every clickable link in `content` a real hyperlink too.
+
+    Textual only wires links up for its own mouse handling. Adding `Style.link`
+    makes it emit an OSC 8 hyperlink as well, so terminals that understand those
+    (iTerm2, kitty, WezTerm, recent gnome-terminal...) let you cmd/ctrl-click
+    straight through to the browser. Terminals that don't simply ignore it.
+    """
+    spans: list[Span] = []
+    changed = False
+    for span in content.spans:
+        style = span.style
+        if isinstance(style, Style) and style.link is None:
+            url = browser_url(_href_from_action(style.meta.get("@click")) or "", base)
+            if url:
+                style = style + Style(link=url)
+                changed = True
+        spans.append(Span(span.start, span.end, style))
+    return Content(content.plain, spans=spans) if changed else content
+
+
+def image_run(token: Token) -> list[tuple[str, str]]:
+    """The (src, alt) pairs of an inline token that is nothing but images.
+
+    A paragraph made only of images (one per line is common) is rendered as
+    pictures; anything with prose around the image keeps Textual's text form.
+    """
+    if not token.children:
+        return []
+    images: list[tuple[str, str]] = []
+    for child in token.children:
+        if child.type == "image":
+            alt = child.content or str(child.attrs.get("alt", ""))
+            images.append((str(child.attrs.get("src", "")), alt))
+        elif child.type in _IMAGE_RUN_FILLER:
+            continue
+        elif child.type == "text" and not child.content.strip():
+            continue
+        else:
+            return []
+    return images
+
+
+def markdown_image(path: Path, alt: str = "") -> Widget:
+    """An image widget for a markdown document, drawn no larger than its own pixels.
+
+    textual-image's widget class is chosen at import time for the terminal, and
+    subclassing it needs its renderable, so it is configured here instead.
+    """
+    widget = TerminalImage(path, classes="markdown-image")
+    widget.tooltip = alt or None
+    width, height = natural_cells(widget._image_width, widget._image_height)
+    widget.styles.max_width = width
+    widget.styles.max_height = height
+    return widget
+
+
+def _image_widget(src: str, alt: str, base: Path) -> Widget | None:
+    """A widget for a local, readable image, else None (URLs, missing files)."""
+    path = local_path(src, base)
+    if path is None or not path.is_file():
+        return None
+    try:
+        return markdown_image(path, alt)
+    except (OSError, ValueError):  # PIL could not read it
+        return None
+
+
+class _Hyperlinks:
+    """Mixin for MarkdownBlock subclasses: link text carries a terminal hyperlink."""
+
+    _markdown: Markdown
+
+    def _token_to_content(self, token: Token) -> Content:
+        content = super()._token_to_content(token)  # type: ignore[misc]
+        base = getattr(self._markdown, "base", None) or Path.cwd()
+        return hyperlinked(content, base)
+
+
+def _with_hyperlinks(block: type[MarkdownBlock]) -> type[MarkdownBlock]:
+    return type(block.__name__, (_Hyperlinks, block), {})
+
+
+class LcatParagraph(_Hyperlinks, Markdown.BLOCKS["paragraph_open"]):  # type: ignore[misc]
+    """A paragraph that shows local images as pictures when the terminal can."""
+
+    def build_from_token(self, token: Token) -> None:
+        markdown = self._markdown
+        if getattr(markdown, "images", False):
+            images = image_run(token)
+            widgets = [_image_widget(src, alt, markdown.base) for src, alt in images]
+            if widgets and all(widgets):
+                self._inline_token = token
+                self._blocks.extend(widgets)  # type: ignore[arg-type]
+                self.set_content(Content(""))
+                return
+        super().build_from_token(token)
+
+
+class LcatMarkdown(Markdown):
+    """Textual's Markdown with terminal hyperlinks and rendered local images."""
+
+    BLOCKS = {name: _with_hyperlinks(block) for name, block in Markdown.BLOCKS.items()}
+    BLOCKS["paragraph_open"] = LcatParagraph
+
+    def __init__(self, *, base: Path, images: bool = True, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.base = base
+        """Directory relative image sources and links are resolved against."""
+        self.images = images
+
+
 class MarkdownView(MarkdownViewer, can_focus=True, can_focus_children=True):
-    """MarkdownViewer plus vim-style scrolling and a toggleable contents sidebar."""
+    """MarkdownViewer plus vim-style scrolling, a contents sidebar, images and links."""
 
     BINDINGS = [
         Binding("j", "scroll_down", "down", show=False),
@@ -178,11 +326,53 @@ class MarkdownView(MarkdownViewer, can_focus=True, can_focus_children=True):
         ("pgup pgdn ctrl+u ctrl+d", "scroll a page"),
         ("g G home end", "top / bottom"),
         ("t", "toggle the table of contents"),
+        ("click a link", "open it in the browser"),
         ("i", "edit the raw text (esc to render it again)"),
         ("ctrl+s", "write the file"),
+        ("r R", "reload from disk / toggle auto-reload"),
         ("?", "this help"),
         ("q", "quit"),
     ]
+
+    def __init__(
+        self,
+        markdown: str | None = None,
+        *,
+        base: Path | None = None,
+        images: bool = True,
+        **kwargs,
+    ) -> None:
+        super().__init__(markdown, **kwargs)
+        self.base = base or Path.cwd()
+        self.images = images
+
+    def compose(self):
+        markdown = LcatMarkdown(
+            base=self.base,
+            images=self.images,
+            parser_factory=self._parser_factory,
+            open_links=False,
+        )
+        markdown.can_focus = True
+        yield markdown
+        yield MarkdownTableOfContents(markdown)
+
+    async def _on_markdown_link_clicked(self, message: Markdown.LinkClicked) -> None:
+        """Open links outside instead of navigating the viewer to another file."""
+        message.stop()
+        # Textual runs the private handler of every base class too; this skips
+        # MarkdownViewer's, which would try to load the target as a markdown file.
+        message.prevent_default()
+        href = message.href
+        if href.startswith("#"):
+            if not self.document.goto_anchor(href[1:]):
+                self.notify(f"no heading {href}", severity="warning", timeout=2)
+            return
+        url = browser_url(href, self.base)
+        if url is None:
+            return
+        self.app.open_url(url)
+        self.notify(f"opened {href}", timeout=2)
 
     def action_edit(self) -> None:
         self.app.enter_edit_mode()
@@ -212,6 +402,7 @@ class CodeView(VerticalScroll):
         ("g G home end", "top / bottom"),
         ("i", "edit the raw text (esc to leave insert mode)"),
         ("ctrl+s", "write the file"),
+        ("r R", "reload from disk / toggle auto-reload"),
         ("?", "this help"),
         ("q", "quit"),
     ]
@@ -239,6 +430,74 @@ class CodeView(VerticalScroll):
     def update_text(self, text: str) -> None:
         self._text = text
         self.query_one("#code", Static).update(self._syntax())
+
+
+class ImageView(ScrollableContainer):
+    """One image, fitted to the window; `z` toggles a 1:1 view that scrolls."""
+
+    BINDINGS = [
+        Binding("j", "scroll_down", "down", show=False),
+        Binding("k", "scroll_up", "up", show=False),
+        Binding("h", "scroll_left", "left", show=False),
+        Binding("l", "scroll_right", "right", show=False),
+        Binding("ctrl+d", "page_down", "page down", show=False),
+        Binding("ctrl+u", "page_up", "page up", show=False),
+        Binding("g", "scroll_home", "top", show=False),
+        Binding("G", "scroll_end", "bottom", show=False),
+        Binding("z", "toggle_zoom", "zoom"),
+    ]
+
+    HELP = [
+        ("z", "toggle fit-to-window / actual size"),
+        ("arrows h j k l", "scroll (at actual size)"),
+        ("pgup pgdn ctrl+u ctrl+d", "scroll a page"),
+        ("g G home end", "top / bottom"),
+        ("r R", "reload from disk / toggle auto-reload"),
+        ("?", "this help"),
+        ("q", "quit"),
+    ]
+
+    def __init__(self, image: PILImage, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._image = image
+        self.fit = True
+        """Scale down to fit the window (never up); False shows one pixel per pixel."""
+
+    def compose(self):
+        yield TerminalImage(self._image, id="image")
+
+    def on_mount(self) -> None:
+        self._apply_zoom()
+
+    @property
+    def image_widget(self) -> Widget:
+        return self.query_one("#image")
+
+    def _apply_zoom(self) -> None:
+        styles = self.image_widget.styles
+        width, height = natural_cells(self._image.width, self._image.height)
+        if self.fit:
+            styles.max_width = width
+            styles.max_height = height
+            styles.width = "auto"
+            styles.height = "auto"
+        else:
+            styles.max_width = None
+            styles.max_height = None
+            styles.width = width
+            styles.height = height
+
+    def set_image(self, image: PILImage) -> None:
+        """Show another image, keeping the zoom mode."""
+        self._image = image
+        self.image_widget.image = image  # type: ignore[attr-defined]
+        self._apply_zoom()
+
+    def action_toggle_zoom(self) -> None:
+        self.fit = not self.fit
+        self._apply_zoom()
+        self.scroll_home(animate=False)
+        self.notify("fit to window" if self.fit else "actual size", timeout=2)
 
 
 class TableView(Vertical):
@@ -275,6 +534,7 @@ class TableView(Vertical):
         ("y Y", "copy the cell / the row"),
         ("i", "edit this cell (esc keeps the edit)"),
         ("ctrl+s", "write the file"),
+        ("r R", "reload from disk / toggle auto-reload"),
         ("?", "this help"),
         ("q", "quit"),
     ]
@@ -305,6 +565,27 @@ class TableView(Vertical):
         table.add_columns(*self.columns)
         table.focus()
         self._populate()
+
+    def replace(self, columns: list[str], rows: list[list[str]]) -> None:
+        """Show new data, keeping the cursor where it was (clamped) and the search."""
+        table = self.table
+        cursor = table.cursor_coordinate
+        self.columns = columns
+        self.source_rows = rows
+        self.view_rows = list(rows)
+        self._sort_column, self._sort_state = None, 0
+        table.clear(columns=True)
+        table.add_columns(*columns)
+        self._populate()
+        if self._query:
+            self._matches = self._find_matches(self._query)
+            self._match_index = 0
+        if rows and columns:
+            table.move_cursor(
+                row=min(cursor.row, len(rows) - 1),
+                column=min(cursor.column, len(columns) - 1),
+            )
+        self._update_status()
 
     def _populate(self) -> None:
         """(Re)fill the table from `view_rows`, streaming if there are many rows."""

@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 
-from lcat.loaders import CodeDoc, Document, JsonFormat, MarkdownDoc, TableDoc
+from lcat.loaders import CodeDoc, Document, ImageDoc, JsonFormat, MarkdownDoc, TableDoc
 
 
 class SaveError(Exception):
@@ -87,6 +87,8 @@ def serialize(doc: Document) -> str:
         if isinstance(doc.fmt, JsonFormat):
             return _json_text(doc)
         return _delimited_text(doc)
+    if isinstance(doc, ImageDoc):
+        raise SaveError("images cannot be edited")
     raise TypeError(f"cannot serialize {type(doc).__name__}")
 
 

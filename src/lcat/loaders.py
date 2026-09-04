@@ -1,4 +1,4 @@
-"""Turn raw file text into one of three simple documents the views can render."""
+"""Turn raw file text into one of four simple documents the views can render."""
 
 from __future__ import annotations
 
@@ -7,6 +7,10 @@ import io
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    from PIL.Image import Image as PILImage
 
 from lcat.detect import sniff_delimiter
 
@@ -72,7 +76,24 @@ class CodeDoc:
     path: Path | None = None
 
 
-Document = MarkdownDoc | TableDoc | CodeDoc
+@dataclass
+class ImageDoc:
+    """A raster image, shown as pixels where the terminal can and blocks elsewhere."""
+
+    image: PILImage
+    path: Path | None = None
+
+    @property
+    def format(self) -> str:
+        return self.image.format or "image"
+
+    @property
+    def size(self) -> tuple[int, int]:
+        """(width, height) in pixels."""
+        return self.image.width, self.image.height
+
+
+Document = MarkdownDoc | TableDoc | CodeDoc | ImageDoc
 
 
 def _cell(value: object) -> str:
@@ -188,6 +209,18 @@ def _parse_json(text: str) -> tuple[object | None, bool]:
     return (items, True) if items else (None, False)
 
 
+def load_image(data: bytes, path: Path | None = None) -> ImageDoc:
+    """Decode an image file. Raises ValueError if PIL cannot read it."""
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.load()
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError) as error:
+        raise ValueError(f"not a readable image: {error}") from error
+    return ImageDoc(image, path)
+
+
 def load(
     text: str,
     mode: str,
@@ -203,4 +236,6 @@ def load(
         return load_delimited(text, path, delimiter or "\t", has_header)
     if mode == "csv":
         return load_delimited(text, path, delimiter, has_header)
+    if mode == "img":
+        raise ValueError("images are loaded from bytes with load_image()")
     raise ValueError(f"unknown mode: {mode!r}")

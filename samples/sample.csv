@@ -1,6 +1,6 @@
 id,name,team,role,commits,note
 1,Ada Lovelace,analytics,engineer,842,"Wrote the first algorithm intended for a machine, which is a fairly long note so you can test the cell detail popup"
-2,Grace Hopper,compilers,principal,1204,Coined "debugging" after a moth
+2,Grace Hopper,compilers,principal,1204,"Coined ""debugging"" after a moth"
 3,Alan Turing,research,scientist,377,
 4,Katherine Johnson,flight,analyst,915,Orbital mechanics by hand
 5,Margaret Hamilton,software,lead,2310,Ran the Apollo guidance computer team
