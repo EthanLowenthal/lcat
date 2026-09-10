@@ -8,7 +8,15 @@ import json
 import os
 from pathlib import Path
 
-from lcat.loaders import CodeDoc, Document, ImageDoc, JsonFormat, MarkdownDoc, TableDoc
+from lcat.loaders import (
+    CodeDoc,
+    Document,
+    ImageDoc,
+    JsonFormat,
+    MarkdownDoc,
+    TableDoc,
+    WorkbookDoc,
+)
 
 
 class SaveError(Exception):
@@ -89,6 +97,8 @@ def serialize(doc: Document) -> str:
         return _delimited_text(doc)
     if isinstance(doc, ImageDoc):
         raise SaveError("images cannot be edited")
+    if isinstance(doc, WorkbookDoc):
+        raise SaveError("xlsx files are read-only")
     raise TypeError(f"cannot serialize {type(doc).__name__}")
 
 

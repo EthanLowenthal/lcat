@@ -1,4 +1,4 @@
-"""The interactive views: markdown, table, code and image."""
+"""The interactive views: markdown, table, workbook, code and image."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from textual.widgets.markdown import MarkdownBlock, MarkdownTableOfContents
 from textual_image.widget import Image as TerminalImage
 
 from lcat.images import browser_url, local_path, natural_cells
+from lcat.loaders import WorkbookDoc
 
 if TYPE_CHECKING:  # pragma: no cover
     from markdown_it.token import Token
@@ -839,3 +840,109 @@ class TableView(Vertical):
         coordinate = self._matches[self._match_index]
         self.table.move_cursor(row=coordinate.row, column=coordinate.column)
         self._update_status(f"match {self._match_index + 1}/{len(self._matches)}")
+
+
+class WorkbookView(TableView):
+    """One sheet of a workbook at a time, with a strip of sheet names above it.
+
+    Workbooks are read only: openpyxl cannot round-trip everything an xlsx holds
+    (charts, images, pivot tables), so writing one back would quietly drop parts of
+    the file. Cells still open with `enter` for reading and copying.
+    """
+
+    BINDINGS = [
+        Binding("right_square_bracket", "next_sheet", "next sheet"),
+        Binding("left_square_bracket", "prev_sheet", "prev sheet", show=False),
+        Binding("f", "toggle_formulas", "formulas"),
+        # Read-only: `i` still answers, but it does not belong in the footer.
+        Binding("i", "edit_cell", "edit", show=False),
+    ]
+
+    HELP = [
+        ("arrows h j k l", "move the cell cursor"),
+        ("pgup pgdn", "scroll a page"),
+        ("g G", "first / last row"),
+        ("^ $", "first / last column"),
+        ("enter", "show the full cell value"),
+        ("[ ]", "previous / next sheet"),
+        ("f", "show formulas instead of computed values"),
+        ("/", "search cells"),
+        ("n N", "next / previous match"),
+        ("s", "sort by this column (asc, desc, original)"),
+        ("y Y", "copy the cell / the row"),
+        ("r R", "reload from disk / toggle auto-reload"),
+        ("?", "this help"),
+        ("q", "quit"),
+    ]
+
+    def __init__(self, workbook: WorkbookDoc, id: str | None = None) -> None:
+        sheet = workbook.sheet
+        super().__init__(sheet.columns, sheet.rows, id=id)
+        self.workbook = workbook
+
+    def compose(self):
+        yield Static(self._sheet_strip(), id="sheets")
+        yield from super().compose()
+
+    # -- sheets ----------------------------------------------------------
+
+    def show_workbook(self, workbook: WorkbookDoc) -> None:
+        """Show a different workbook (a reload of the same file)."""
+        self.workbook = workbook
+        self._show_sheet(home=False)
+
+    def _show_sheet(self, *, home: bool) -> None:
+        """Put the selected sheet on screen. `home` resets the cursor, which is what
+        a different sheet wants; the formula toggle keeps its place instead."""
+        sheet = self.workbook.sheet
+        self.replace(sheet.columns, sheet.rows)
+        if home:
+            self.table.move_cursor(row=0, column=0)
+        self._update_sheets()
+        self.app.refresh_status()
+
+    def _sheet_strip(self) -> Content:
+        """Every sheet name, the one on screen highlighted. Names are arbitrary text,
+        so the highlight is a span rather than markup."""
+        text = ""
+        spans: list[Span] = []
+        for index, name in enumerate(self.workbook.names):
+            label = f" {name} "
+            if index == self.workbook.index:
+                span = Span(len(text), len(text) + len(label), Style(reverse=True))
+                spans.append(span)
+            text += label
+        return Content(text, spans=spans)
+
+    def _update_sheets(self) -> None:
+        self.query_one("#sheets", Static).update(self._sheet_strip())
+
+    def _step_sheet(self, delta: int) -> None:
+        sheets = self.workbook.sheets
+        if len(sheets) < 2:
+            self.notify("the workbook has one sheet", timeout=2)
+            return
+        self.workbook.index = (self.workbook.index + delta) % len(sheets)
+        self._show_sheet(home=True)
+
+    # -- actions ---------------------------------------------------------
+
+    def action_next_sheet(self) -> None:
+        self._step_sheet(1)
+
+    def action_prev_sheet(self) -> None:
+        self._step_sheet(-1)
+
+    def action_toggle_formulas(self) -> None:
+        workbook = self.workbook
+        if not workbook.formulas and not workbook.read_formulas():
+            self.notify("cannot read the formulas again", severity="warning", timeout=3)
+            return
+        workbook.formulas = not workbook.formulas
+        self._show_sheet(home=False)
+        self.notify(
+            "showing formulas" if workbook.formulas else "showing values", timeout=2
+        )
+
+    def action_edit_cell(self) -> None:
+        self.notify("xlsx files are read-only", severity="warning", timeout=3)

@@ -9,7 +9,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-MODES = ("auto", "md", "csv", "tsv", "json", "img")
+MODES = ("auto", "md", "csv", "tsv", "json", "xlsx", "img")
 
 _EXTENSIONS = {
     ".md": "md",
@@ -22,6 +22,8 @@ _EXTENSIONS = {
     ".json": "json",
     ".jsonl": "json",
     ".ndjson": "json",
+    ".xlsx": "xlsx",
+    ".xlsm": "xlsx",
     ".png": "img",
     ".jpg": "img",
     ".jpeg": "img",
@@ -107,6 +109,18 @@ def is_image(data: bytes) -> bool:
     return len(data) >= 14 and data[:2] == b"BM" and data[6:10] == b"\x00\x00\x00\x00"
 
 
+def is_xlsx(data: bytes) -> bool:
+    """True if `data` starts like an xlsx workbook.
+
+    An xlsx is a zip, so the signature alone would also match a docx or a jar. Every
+    OOXML package opens with `[Content_Types].xml`, and only a spreadsheet keeps its
+    parts under `xl/`, whose local header follows within the first few entries.
+    """
+    if not data.startswith(b"PK\x03\x04"):
+        return False
+    return b"[Content_Types].xml" in data and b"xl/" in data
+
+
 def sniff_mode(sample: str) -> str:
     """Guess a mode from the head of a file. Falls back to markdown."""
     stripped = sample.strip()
@@ -147,6 +161,9 @@ def resolve_mode(
         by_ext = mode_from_extension(path)
         if by_ext is not None:
             return by_ext
-    if raw is not None and is_image(raw):
-        return "img"
+    if raw is not None:
+        if is_xlsx(raw):
+            return "xlsx"
+        if is_image(raw):
+            return "img"
     return sniff_mode(sample)

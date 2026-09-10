@@ -9,13 +9,13 @@ from pathlib import Path
 
 from lcat import __version__
 from lcat.detect import MODES, SNIFF_BYTES, resolve_mode
-from lcat.loaders import Document, TableDoc, load, load_image
+from lcat.loaders import Document, TableDoc, WorkbookDoc, load, load_image, load_xlsx
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lcat",
-        description="Render markdown, CSV/TSV, JSON and image files in the terminal.",
+        description="Render markdown, CSV/TSV, JSON, xlsx and image files in the terminal.",
     )
     parser.add_argument("file", help="file to view, or - for stdin")
     parser.add_argument(
@@ -100,6 +100,10 @@ def _build(raw: bytes, path: Path | None, mode: str, args: argparse.Namespace) -
     """Turn file bytes into a document with the options given on the command line."""
     if mode == "img":
         return load_image(raw, path)
+    if mode == "xlsx":
+        return load_xlsx(
+            raw, path, has_header=not args.no_header, max_rows=args.max_rows
+        )
     doc = load(
         raw.decode(args.encoding, errors="replace"),
         mode,
@@ -129,6 +133,9 @@ def main(argv: list[str] | None = None) -> int:
         return _fail(f"lcat: {args.file}: {error}")
 
     if isinstance(doc, TableDoc) and not doc.columns:
+        print(f"lcat: {args.file}: no rows to show", file=sys.stderr)
+        return 0
+    if isinstance(doc, WorkbookDoc) and not any(sheet.columns for sheet in doc.sheets):
         print(f"lcat: {args.file}: no rows to show", file=sys.stderr)
         return 0
 

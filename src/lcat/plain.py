@@ -13,7 +13,15 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from lcat.images import natural_cells
-from lcat.loaders import CodeDoc, Document, ImageDoc, MarkdownDoc, TableDoc
+from lcat.loaders import (
+    CodeDoc,
+    Document,
+    ImageDoc,
+    MarkdownDoc,
+    SheetDoc,
+    TableDoc,
+    WorkbookDoc,
+)
 
 
 def _width() -> int:
@@ -42,21 +50,43 @@ def render(doc: Document) -> None:
         return
 
     if isinstance(doc, TableDoc):
-        if not doc.columns:
-            console.print("[dim](empty table)[/dim]")
-            return
-        table = Table(box=box.SIMPLE, header_style="bold", pad_edge=False)
-        for name in doc.columns:
-            table.add_column(name, overflow="fold")
-        for row in doc.rows:
-            table.add_row(*row)
-        console.print(table)
-        if doc.total_rows is not None:
-            hidden = doc.total_rows - len(doc.rows)
-            console.print(f"[dim]... {hidden:,} more rows[/dim]")
+        _render_table(doc.columns, doc.rows, doc.total_rows, console)
+        return
+
+    if isinstance(doc, WorkbookDoc):
+        # Every sheet, one after another: a pipe has no keys to switch between them.
+        for index, sheet in enumerate(doc.sheets):
+            if index:
+                console.print()
+            _render_sheet(sheet, console)
         return
 
     raise TypeError(f"cannot render {type(doc).__name__}")
+
+
+def _render_sheet(sheet: SheetDoc, console: Console) -> None:
+    # A sheet name is arbitrary text; printed as markup, a "[" in one would break it.
+    console.print(sheet.name, style="bold")
+    _render_table(sheet.columns, sheet.rows, sheet.total_rows, console)
+
+
+def _render_table(
+    columns: list[str],
+    rows: list[list[str]],
+    total_rows: int | None,
+    console: Console,
+) -> None:
+    if not columns:
+        console.print("[dim](empty table)[/dim]")
+        return
+    table = Table(box=box.SIMPLE, header_style="bold", pad_edge=False)
+    for name in columns:
+        table.add_column(name, overflow="fold")
+    for row in rows:
+        table.add_row(*row)
+    console.print(table)
+    if total_rows is not None:
+        console.print(f"[dim]... {total_rows - len(rows):,} more rows[/dim]")
 
 
 def _render_image(doc: ImageDoc, console: Console) -> None:

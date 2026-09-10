@@ -3,20 +3,21 @@
 A `cat` that renders. Point it at a markdown file and get styled, scrollable prose with a
 table-of-contents jump list, clickable links and inline images; point it at a CSV and get a
 full-screen table you can walk with the arrow keys, search, sort, and copy from; point it at a
-PNG and see the picture.
+spreadsheet and get the same table, a sheet at a time; point it at a PNG and see the picture.
 
 ```
 lcat notes.md
 lcat data.csv
 lcat records.json
+lcat book.xlsx
 lcat photo.png
 ```
 
-Markdown, CSV, TSV, JSON (including JSON Lines) and PNG/JPEG/GIF/BMP/WebP/TIFF images are
-supported. Press `i` to edit what you are looking at and `ctrl+s` to write it back. The view
-follows the file: when something else writes it, lcat reloads it in place (`R` toggles this,
-`r` reloads on demand). When stdout is not a terminal (`lcat notes.md | less -R`) it prints a
-static render and exits, so it stays usable in a pipe.
+Markdown, CSV, TSV, JSON (including JSON Lines), xlsx workbooks and PNG/JPEG/GIF/BMP/WebP/TIFF
+images are supported. Press `i` to edit what you are looking at and `ctrl+s` to write it back
+(xlsx is read-only). The view follows the file: when something else writes it, lcat reloads it
+in place (`R` toggles this, `r` reloads on demand). When stdout is not a terminal
+(`lcat notes.md | less -R`) it prints a static render and exits, so it stays usable in a pipe.
 
 ## Install
 
@@ -30,10 +31,12 @@ uv tool install .
 ```
 lcat [FILE|-] [options]
 
-  --mode {auto,md,csv,tsv,json,img}   force a renderer (default: auto, by extension then sniffing)
+  --mode {auto,md,csv,tsv,json,xlsx,img}
+                                  force a renderer (default: auto, by extension then sniffing)
   -p, --plain                     static render to stdout instead of the interactive view
   -d, --delimiter CHAR            delimiter for csv/tsv (default: sniffed)
   --no-header                     treat the first row as data, name columns col1..colN
+                                  (A..Z for a worksheet)
   --encoding ENC                  input encoding (default: utf-8)
   --max-rows N                    show only the first N rows of a table
   --no-images                     show markdown images as their alt text
@@ -73,6 +76,13 @@ Table view:
 | `y` / `Y` | copy the cell / the row |
 | `i` | edit this cell in the full-value modal; `esc` keeps the edit |
 
+Workbook view (xlsx): the table keys above, minus editing, plus
+
+| Key | Action |
+| --- | --- |
+| `]` `[` | next / previous sheet |
+| `f` | show formulas instead of the values Excel computed |
+
 Image view:
 
 | Key | Action |
@@ -98,16 +108,33 @@ file: blank lines and ragged rows go, quoting is minimal, and a JSON table is re
 spaces (one document per line for JSON Lines) with every record carrying the union of the keys.
 Cell types survive a round trip — a column that held numbers stays numbers, a column that held
 strings stays strings. `lcat -` cannot save (there is no file), and neither can a table loaded
-with `--max-rows`, which would write back only the head.
+with `--max-rows`, which would write back only the head, nor an xlsx, which is read-only.
+
+## Spreadsheets
+
+An xlsx opens in the table view, one worksheet at a time, with a strip of sheet names above the
+table and the active sheet in the subtitle; `]` and `[` walk them. Cells show the value Excel
+last computed and saved, so a formula whose result was never written to the file reads as empty;
+`f` swaps the whole sheet to the formula text (`=C2*D2`) and back. Trailing blank rows and
+columns are dropped, so the table is the size it looks in Excel, while gaps inside the sheet are
+kept — an unnamed column keeps its spreadsheet letter. Dates come out as `2026-03-04`,
+timestamps as `2026-03-04 09:30:00`, and number formats (currency, percent, decimal places) are
+not applied: you get the underlying value.
+
+Workbooks are read-only. openpyxl cannot round-trip everything an xlsx holds — charts, images
+and pivot tables do not survive a save — so `i` and `ctrl+s` decline rather than quietly drop
+parts of your file. `.xlsm` reads too (the macros are ignored); `.xls`, the pre-2007 binary
+format, does not.
 
 ## Following the file
 
 Once a second lcat checks the file's modification time and size, and when they change it
 reads the file again with the same options and updates the view in place: the table keeps its
-cursor, sort is reset, the search is re-run, markdown and code keep their scroll position, and
-an image keeps its zoom. If the file turns into a different kind of document (a JSON table
-that stops being tabular, say) the view is swapped. The subtitle shows `watching` while this
-is on; `R` toggles it and `--no-reload` starts with it off.
+cursor, sort is reset, the search is re-run, markdown and code keep their scroll position, an
+image keeps its zoom, and a workbook stays on the sheet you were reading (matched by name) in
+whichever of the value and formula readings you had up. If the file turns into a different kind
+of document (a JSON table that stops being tabular, say) the view is swapped. The subtitle shows
+`watching` while this is on; `R` toggles it and `--no-reload` starts with it off.
 
 Unsaved edits are never overwritten: if the file changes while the subtitle says `modified`
 (or while you are in insert mode) lcat only warns. `r` is the explicit reload and discards the
@@ -140,7 +167,7 @@ it prints a one-line summary (`photo.png: PNG image, 480×270 px`).
 
 - Format detection is by extension first, then by content, so extensionless files and stdin
   still land in the right view. A markdown pipe table is treated as markdown, not as
-  pipe-delimited data, and image files are recognised by their magic bytes.
+  pipe-delimited data, and image files and xlsx workbooks are recognised by their magic bytes.
 - Textual's `DataTable` measures every cell it is handed, so very large tables are streamed in
   batches: the first screenful appears immediately and the status line shows the progress. A
   50k-row, 10 MB CSV paints in about a quarter of a second and finishes loading in about two and
@@ -156,5 +183,6 @@ uv run pytest -q
 uv run lcat samples/sample.csv
 uv run lcat samples/nested.json   # JSON that is not a table: the raw code view
 uv run lcat samples/sample.md     # includes an image and links
+uv run lcat samples/sample.xlsx  # three sheets, a formula column ([ ] and f)
 uv run lcat samples/sample.png
 ```

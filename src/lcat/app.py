@@ -12,7 +12,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Static
 
-from lcat.loaders import CodeDoc, Document, ImageDoc, MarkdownDoc, TableDoc
+from lcat.loaders import CodeDoc, Document, ImageDoc, MarkdownDoc, TableDoc, WorkbookDoc
 from lcat.save import SaveError, save
 from lcat.views import (
     CodeView,
@@ -21,6 +21,7 @@ from lcat.views import (
     MarkdownView,
     RawEditor,
     TableView,
+    WorkbookView,
 )
 
 
@@ -112,6 +113,8 @@ class LcatApp(App[None]):
             yield self._editor()
         elif isinstance(self.doc, TableDoc):
             yield TableView(self.doc.columns, self.doc.rows, id="view")
+        elif isinstance(self.doc, WorkbookDoc):
+            yield WorkbookView(self.doc, id="view")
         elif isinstance(self.doc, CodeDoc):
             yield CodeView(self.doc.text, self.doc.lexer, id="view")
             yield self._editor()
@@ -186,7 +189,8 @@ class LcatApp(App[None]):
         """Replace the document, updating the view in place when its kind is unchanged
         so the cursor and scroll position survive; otherwise swap the view out."""
         view = self.query_one("#view")
-        same_kind = type(doc) is type(self.doc)
+        previous = self.doc
+        same_kind = type(doc) is type(previous)
         self.doc = doc
         self.editing = False
         self.dirty = False
@@ -202,6 +206,13 @@ class LcatApp(App[None]):
                 view.update_text(doc.text)
         elif same_kind and isinstance(doc, TableDoc):
             view.replace(doc.columns, doc.rows)
+        elif same_kind and isinstance(doc, WorkbookDoc):
+            # Keep looking at the same sheet, by name: a reload may reorder them.
+            assert isinstance(previous, WorkbookDoc)  # same_kind
+            name = previous.names[previous.index] if previous.names else None
+            doc.index = doc.names.index(name) if name in doc.names else 0
+            doc.formulas = previous.formulas and doc.read_formulas()
+            view.show_workbook(doc)
         elif same_kind and isinstance(doc, ImageDoc):
             view.set_image(doc.image)
         else:
@@ -225,15 +236,26 @@ class LcatApp(App[None]):
 
     # -- title -----------------------------------------------------------
 
+    @staticmethod
+    def _shape(rows: int, cols: int, total: int | None) -> str:
+        if total is not None:
+            return f"first {rows:,} of {total:,} rows × {cols} cols"
+        return f"{rows:,} rows × {cols} cols"
+
     def _describe(self) -> str:
         path = self.doc.path
         if isinstance(self.doc, TableDoc):
             rows, cols = self.doc.shape
-            if self.doc.total_rows is not None:
-                shape = f"first {rows:,} of {self.doc.total_rows:,} rows × {cols} cols"
-            else:
-                shape = f"{rows:,} rows × {cols} cols"
+            shape = self._shape(rows, cols, self.doc.total_rows)
             return f"{path.name} · {shape}" if path else shape
+        if isinstance(self.doc, WorkbookDoc):
+            sheet = self.doc.sheet
+            rows, cols = sheet.shape
+            parts = [sheet.name, self._shape(rows, cols, sheet.total_rows)]
+            if self.doc.formulas:
+                parts.append("formulas")
+            about = " · ".join(parts)
+            return f"{path.name} · {about}" if path else about
         if isinstance(self.doc, ImageDoc):
             width, height = self.doc.size
             about = f"{width}×{height} px · {self.doc.format}"
@@ -251,6 +273,10 @@ class LcatApp(App[None]):
         if self.auto_reload:
             parts.append("watching")
         self.sub_title = " · ".join(parts)
+
+    def refresh_status(self) -> None:
+        """Called by a view after it changes what is on screen (a workbook sheet)."""
+        self._refresh_subtitle()
 
     def watch_dirty(self, dirty: bool) -> None:
         if self.is_running:
@@ -301,6 +327,9 @@ class LcatApp(App[None]):
     # -- actions ---------------------------------------------------------
 
     def action_save(self) -> None:
+        if isinstance(self.doc, WorkbookDoc):
+            self.notify("xlsx files are read-only", severity="warning", timeout=3)
+            return
         if self.editing:
             self._take_text(self.query_one("#editor", RawEditor).text)
         if not self.dirty:
