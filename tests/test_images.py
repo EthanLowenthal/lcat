@@ -1,5 +1,6 @@
 import contextlib
 import io
+import logging
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ from textual.widgets.markdown import MarkdownBlock
 
 from lcat.app import LcatApp
 from lcat.detect import is_image, mode_from_extension, resolve_mode
-from lcat.images import browser_url, local_path
+from lcat.images import browser_url, local_path, silence_cell_size_probe
 from lcat.loaders import ImageDoc, load, load_image
 from lcat.plain import render
 from lcat.save import SaveError, serialize
@@ -88,6 +89,15 @@ def test_link_targets():
     )
     assert local_path("pics/a%20b.png", base) == base / "pics/a b.png"
     assert local_path("https://example.com/a.png", base) is None
+
+
+def test_cell_size_probe_warning_is_swallowed(caplog):
+    """A terminal that ignores the cell size query prints no traceback on startup."""
+    silence_cell_size_probe()
+    logger = logging.getLogger("textual_image._terminal")
+    with caplog.at_level(logging.WARNING):
+        logger.warning("Failed to get cell size", exc_info=TimeoutError("no data"))
+    assert not caplog.records
 
 
 # -- plain output ------------------------------------------------------------

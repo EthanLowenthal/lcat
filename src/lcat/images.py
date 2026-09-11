@@ -9,6 +9,7 @@ on the interactive / tty paths.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -16,6 +17,21 @@ FALLBACK_CELL = (10, 20)
 """Cell size in pixels when the terminal cannot be asked (VT340 dimensions)."""
 
 _BROWSER_SCHEMES = {"http", "https", "mailto", "file", "ftp"}
+
+
+def silence_cell_size_probe() -> None:
+    r"""Keep textual-image's cell size probe from printing a traceback.
+
+    textual-image asks the terminal for its cell size with `\x1b[16t` and, when
+    no reply arrives within its 0.1s timeout, logs a warning *with a traceback*
+    and falls back to FALLBACK_CELL. Plenty of terminals never answer (ssh,
+    screen, anything without the xterm window-ops), and nothing is broken when
+    they don't, so the traceback is pure noise on an otherwise clean start.
+
+    Called from `lcat/__init__.py`, which Python runs before any `lcat` module
+    can import textual_image -- importing `textual_image.widget` probes at once.
+    """
+    logging.getLogger("textual_image._terminal").setLevel(logging.ERROR)
 
 
 def cell_size() -> tuple[int, int]:
