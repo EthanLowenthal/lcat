@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
+from rich.console import Console
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable
 
@@ -279,3 +280,187 @@ async def test_reload_falls_back_to_the_first_sheet_when_one_disappears(tmp_path
         await pilot.pause()
         assert app.doc.index == 0
         assert "Sales" in app.sub_title
+
+
+# -- formatting --------------------------------------------------------------
+
+
+def styled_bytes(
+    rows, *, fonts=None, fills=None, formats=None, aligns=None, widths=None
+) -> bytes:
+    """An xlsx whose cells carry formatting, keyed by coordinate: fonts={"A1": Font(...)}."""
+    from openpyxl.styles import Alignment
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "S"
+    for row in rows:
+        sheet.append(row)
+    for coord, font in (fonts or {}).items():
+        sheet[coord].font = font
+    for coord, fill in (fills or {}).items():
+        sheet[coord].fill = fill
+    for coord, fmt in (formats or {}).items():
+        sheet[coord].number_format = fmt
+    for coord, how in (aligns or {}).items():
+        sheet[coord].alignment = Alignment(horizontal=how)
+    for letter, width in (widths or {}).items():
+        sheet.column_dimensions[letter].width = width
+    buffer = io.BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+def blue_header() -> bytes:
+    from openpyxl.styles import Font, PatternFill
+
+    return styled_bytes(
+        [["region", "revenue"], ["North", 1234.5], ["South", -800]],
+        fonts={"A1": Font(bold=True, color="FFFFFFFF"), "B1": Font(bold=True)},
+        fills={
+            "A1": PatternFill("solid", fgColor="FF4F81BD"),
+            "A3": PatternFill("solid", fgColor="FFFFFF00"),
+        },
+        formats={"B2": '"$"#,##0.00', "B3": '"$"#,##0.00'},
+        widths={"A": 20},
+    )
+
+
+def test_styles_line_up_with_the_rows_they_describe():
+    sheet = load_xlsx(blue_header()).sheet
+    assert len(sheet.styles) == len(sheet.rows)
+    assert all(len(s) == len(r) for s, r in zip(sheet.styles, sheet.rows))
+    assert len(sheet.column_styles) == len(sheet.columns)
+    assert sheet.colored
+
+
+def test_the_header_carries_its_fill_and_font():
+    sheet = load_xlsx(blue_header()).sheet
+    header = sheet.column_styles[0]
+    assert header.background == "#4f81bd"
+    assert header.color == "#ffffff"
+    assert header.bold
+
+
+def test_number_formats_reach_the_cell_text():
+    sheet = load_xlsx(blue_header()).sheet
+    assert sheet.rows[0][1] == "$1,234.50"
+    assert sheet.rows[1][1] == "-$800.00"
+
+
+def test_numbers_are_right_aligned_and_text_is_not():
+    sheet = load_xlsx(blue_header()).sheet
+    assert sheet.styles[0][0].align == "left"
+    assert sheet.styles[0][1].align == "right"
+
+
+def test_excel_column_widths_are_carried():
+    sheet = load_xlsx(blue_header()).sheet
+    assert sheet.widths[0] == 20
+    assert sheet.widths[1] is None
+
+
+def test_cells_sharing_a_format_share_one_style_object():
+    """The intern cache is what keeps a big sheet from paying per cell."""
+    rows = [["a", "b"]] + [["x", "y"] for _ in range(20)]
+    sheet = load_xlsx(styled_bytes(rows)).sheet
+    first = sheet.styles[0][0]
+    assert all(style is first for row in sheet.styles for style in row)
+
+
+def test_a_plain_workbook_has_no_colours():
+    """Alignment alone must not move a sheet onto the white canvas."""
+    sheet = load_xlsx(sample()).sheet
+    assert not sheet.colored
+    assert all(
+        style.color is None and style.background is None
+        for row in sheet.styles
+        for style in row
+    )
+
+
+def test_an_unfilled_cell_keeps_no_background():
+    sheet = load_xlsx(blue_header()).sheet
+    assert sheet.styles[0][0].background is None
+
+
+def test_head_slices_the_styles_with_the_rows():
+    doc = load_xlsx(blue_header(), max_rows=1)
+    sheet = doc.sheet
+    assert len(sheet.rows) == 1 and len(sheet.styles) == 1
+    assert sheet.column_styles is not None and sheet.widths is not None
+
+
+def test_no_style_drops_the_formatting_but_not_the_values():
+    doc = load_xlsx(blue_header(), styles=False)
+    sheet = doc.sheet
+    assert sheet.styles is None and sheet.widths is None and not sheet.colored
+    assert sheet.rows[0][1] == "1234.5"  # unformatted, as before
+    assert doc.read_formulas()
+    assert doc.formula_sheets[0].styles is None
+
+
+# -- formatting on screen ----------------------------------------------------
+
+
+async def test_cells_reach_the_table_with_their_styling():
+    app = LcatApp(load_xlsx(blue_header()))
+    async with app.run_test():
+        table = app.query_one(DataTable)
+        cell = table.get_cell_at(Coordinate(0, 1))
+        assert cell.text == "$1,234.50"
+        assert cell.style.align == "right"
+        assert table.ordered_columns[0].width == 20
+
+
+async def test_a_coloured_sheet_is_drawn_on_paper():
+    app = LcatApp(load_xlsx(blue_header()))
+    async with app.run_test(size=(40, 10)):
+        view = app.query_one("#view")
+        assert view.has_class("styled")
+        table = app.query_one(DataTable)
+        backgrounds = set()
+        for y in range(3):
+            for segment in table.render_line(y):
+                color = segment.style.bgcolor if segment.style else None
+                if color is not None and color.triplet is not None:
+                    backgrounds.add(color.triplet.hex)
+        assert "#ffffff" in backgrounds  # the paper, untinted
+        assert "#4f81bd" in backgrounds  # the header's own fill
+
+
+async def test_a_plain_sheet_keeps_the_app_theme():
+    app = LcatApp(load_xlsx(sample()))
+    async with app.run_test():
+        assert not app.query_one("#view").has_class("styled")
+
+
+async def test_no_style_hands_the_table_plain_strings():
+    app = LcatApp(load_xlsx(blue_header(), styles=False))
+    async with app.run_test():
+        table = app.query_one(DataTable)
+        assert table.get_cell_at(Coordinate(0, 1)) == "1234.5"
+        assert not app.query_one("#view").has_class("styled")
+
+
+async def test_sorting_a_styled_sheet_keeps_working():
+    """DataTable.sort hands the stored cell to the key function, renderable and all."""
+    app = LcatApp(load_xlsx(blue_header()))
+    async with app.run_test() as pilot:
+        await pilot.press("right", "s")
+        await pilot.pause()
+        table = app.query_one(DataTable)
+        # -$800.00 sorts below $1,234.50 despite the currency and the sign.
+        assert str(table.get_cell_at(Coordinate(0, 1))) == "-$800.00"
+
+
+def test_styling_reaches_a_pipe():
+    console = Console(
+        width=50, force_terminal=True, color_system="truecolor", highlight=False
+    )
+    with console.capture() as capture:
+        render(load_xlsx(blue_header()), console=console)
+    out = capture.get()
+    assert "48;2;79;129;189" in out  # the header fill
+    assert "48;2;255;255;255" in out  # the paper
+    assert "$1,234.50" in out

@@ -1,12 +1,12 @@
 [project]
 name = "lcat"
 version = "0.1.0"
-description = "Interactive terminal viewer for markdown, CSV/TSV, JSON, xlsx and image files"
+description = "Interactive terminal viewer for markdown, CSV/TSV, JSON, xlsx, PDF and image files"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Ethan Lowenthal" }]
-keywords = ["cli", "terminal", "tui", "markdown", "csv", "xlsx", "viewer"]
+keywords = ["cli", "terminal", "tui", "markdown", "csv", "xlsx", "pdf", "viewer"]
 classifiers = [
     "Environment :: Console",
     "License :: OSI Approved :: MIT License",
@@ -15,6 +15,7 @@ classifiers = [
 ]
 dependencies = [
     "openpyxl>=3.1,<4",
+    "pypdfium2>=4.30,<6",
     "textual>=8.0,<9",
     "textual-image>=0.12,<1",
 ]

@@ -12,6 +12,49 @@ DataTable {
     height: 1fr;
 }
 
+/* --- a coloured worksheet is drawn on its own sheet of paper ---
+   An xlsx picks its colours assuming a white page behind them. Rendering one over a
+   dark terminal theme would make the file's own defaults (black text, no fill)
+   invisible, so a sheet that carries colours gets the page too. Sheets with no
+   colours of their own keep the app's theme -- see WorkbookView._add_columns. */
+
+WorkbookView.styled DataTable {
+    background: #ffffff;
+    color: #1a1a1a;
+    /* DataTable tints its own background with $foreground 5% while focused, which
+       turns the paper grey. */
+    background-tint: transparent;
+    scrollbar-background: #ffffff;
+    scrollbar-color: #b8b8b8;
+    scrollbar-background-hover: #ffffff;
+    scrollbar-background-active: #ffffff;
+}
+
+WorkbookView.styled DataTable > .datatable--header {
+    background: #e8e8e8;
+    color: #1a1a1a;
+    background-tint: transparent;
+    text-style: bold;
+}
+
+/* fixed_columns=1 paints column 0 with a theme colour of its own. */
+WorkbookView.styled DataTable > .datatable--fixed {
+    background: #f2f2f2;
+    color: #1a1a1a;
+}
+
+WorkbookView.styled DataTable > .datatable--cursor,
+WorkbookView.styled DataTable > .datatable--fixed-cursor,
+WorkbookView.styled DataTable > .datatable--header-cursor {
+    background: #1a56b8;
+    color: #ffffff;
+    text-style: bold;
+}
+
+WorkbookView.styled DataTable > .datatable--hover {
+    background: #dbe7ff;
+}
+
 #sheets {
     dock: top;
     height: 1;
@@ -111,4 +154,10 @@ CellModal, HelpModal, QuitModal {
 
 #quit-body {
     height: auto;
+}
+
+/* --- PDF view: the text reading of a page --- */
+
+#page-text {
+    padding: 1 2;
 }

@@ -7,15 +7,22 @@ import io
 import json
 import warnings
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from PIL.Image import Image as PILImage
+    from pypdfium2 import PdfDocument
 
+from lcat import xlsx_style
 from lcat.detect import sniff_delimiter
+from lcat.xlsx_style import CellStyle
+
+_RED = "#ff0000"
+"""What a `[Red]` negative number format paints its cells."""
 
 
 @dataclass
@@ -81,6 +88,16 @@ class SheetDoc:
     rows: list[list[str]] = field(default_factory=list)
     total_rows: int | None = None
     """Row count before `--max-rows` trimmed it, when it did."""
+    styles: list[list[CellStyle]] | None = None
+    """How each cell is drawn, same shape as `rows`. None when the sheet is plain, so
+    an unformatted dump costs nothing."""
+    column_styles: list[CellStyle] | None = None
+    """How the header cells are drawn. None unless the file supplied the header."""
+    widths: list[int | None] | None = None
+    """Excel's own column widths, in terminal cells, where it set them."""
+    colored: bool = False
+    """Whether any cell carries a colour. Alignment alone does not count: a plain dump
+    should not be moved onto a white canvas just because its numbers sit right."""
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -89,7 +106,16 @@ class SheetDoc:
     def head(self, max_rows: int | None) -> "SheetDoc":
         if max_rows is None or len(self.rows) <= max_rows:
             return self
-        return SheetDoc(self.name, self.columns, self.rows[:max_rows], len(self.rows))
+        return SheetDoc(
+            self.name,
+            self.columns,
+            self.rows[:max_rows],
+            len(self.rows),
+            self.styles[:max_rows] if self.styles else None,
+            self.column_styles,
+            self.widths,
+            self.colored,
+        )
 
 
 @dataclass
@@ -108,6 +134,8 @@ class WorkbookDoc:
     """The same sheets read as formulas, parsed the first time they are asked for."""
     has_header: bool = True
     max_rows: int | None = None
+    styles: bool = True
+    """Read the workbook's formatting. False for `--no-style`."""
 
     @property
     def sheet(self) -> SheetDoc:
@@ -127,7 +155,11 @@ class WorkbookDoc:
         if self.source is None:
             return False
         self.formula_sheets = _read_sheets(
-            self.source, formulas=True, has_header=self.has_header, max_rows=self.max_rows
+            self.source,
+            formulas=True,
+            has_header=self.has_header,
+            max_rows=self.max_rows,
+            styles=self.styles,
         )
         return True
 
@@ -156,7 +188,68 @@ class ImageDoc:
         return self.image.width, self.image.height
 
 
-Document = MarkdownDoc | TableDoc | CodeDoc | ImageDoc | WorkbookDoc
+PDF_SCALE = 2.0
+"""Pixels per PDF point a page is rendered at (144 dpi). The image view scales it down
+to the window, so this only has to be sharp enough for a large one."""
+
+_PAGE_CACHE = 8
+"""Rendered pages kept around, so paging back and forth does not re-render."""
+
+
+@dataclass
+class PdfDoc:
+    """A PDF, one page on screen at a time, drawn as pixels or read as text. Read-only.
+
+    Pages are rendered and their text extracted on demand: a long PDF opens as fast
+    as a short one.
+    """
+
+    pdf: PdfDocument = field(repr=False)
+    path: Path | None = None
+    index: int = 0
+    """Which page is on screen."""
+    as_text: bool = False
+    """Show the page's extracted text instead of its picture."""
+    _images: dict[int, PILImage] = field(default_factory=dict, repr=False)
+    _texts: dict[int, str] = field(default_factory=dict, repr=False)
+
+    @property
+    def page_count(self) -> int:
+        return len(self.pdf)
+
+    def page_image(self, index: int) -> PILImage:
+        image = self._images.get(index)
+        if image is None:
+            if len(self._images) >= _PAGE_CACHE:
+                del self._images[next(iter(self._images))]
+            page = self.pdf[index]
+            try:
+                image = page.render(scale=PDF_SCALE).to_pil()
+            finally:
+                page.close()
+            self._images[index] = image
+        return image
+
+    def page_text(self, index: int) -> str:
+        """The page's text in reading order, as PDFium extracts it. Empty for a scan."""
+        text = self._texts.get(index)
+        if text is None:
+            page = self.pdf[index]
+            try:
+                textpage = page.get_textpage()
+                try:
+                    text = textpage.get_text_bounded()
+                finally:
+                    textpage.close()
+            finally:
+                page.close()
+            # PDFium ends lines with \r\n and writes a hyphen that breaks a word as \x02.
+            text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\x02", "-")
+            self._texts[index] = text = text.strip("\n")
+        return text
+
+
+Document = MarkdownDoc | TableDoc | CodeDoc | ImageDoc | WorkbookDoc | PdfDoc
 
 
 def _cell(value: object) -> str:
@@ -284,6 +377,19 @@ def load_image(data: bytes, path: Path | None = None) -> ImageDoc:
     return ImageDoc(image, path)
 
 
+def load_pdf(data: bytes, path: Path | None = None) -> PdfDoc:
+    """Open a PDF from file bytes. Raises ValueError if PDFium cannot."""
+    import pypdfium2
+
+    try:
+        pdf = pypdfium2.PdfDocument(data)
+    except pypdfium2.PdfiumError as error:
+        raise ValueError(f"not a readable PDF: {error}") from error
+    if len(pdf) == 0:
+        raise ValueError("the PDF has no pages")
+    return PdfDoc(pdf, path)
+
+
 def _xlsx_cell(value: object) -> str:
     """Render a spreadsheet cell as a single-line string."""
     if value is None:
@@ -302,6 +408,20 @@ def _xlsx_cell(value: object) -> str:
     return str(value)
 
 
+def _xlsx_text(value: object, number_format: str) -> tuple[str, bool]:
+    """A cell's display text, and whether its format asks for red negatives.
+
+    Dates never reach the formatter: openpyxl has already turned them into datetimes,
+    and `_xlsx_cell`'s ISO rendering reads better in a terminal than a locale-ordered
+    date does.
+    """
+    if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+        formatted = xlsx_style.number_text(value, number_format)
+        if formatted is not None:
+            return formatted
+    return _xlsx_cell(value), False
+
+
 def _used_width(rows: list[list[str]]) -> int:
     """The last column with anything in it. A sheet usually claims more."""
     width = 0
@@ -313,30 +433,83 @@ def _used_width(rows: list[list[str]]) -> int:
     return width
 
 
-def _sheet(name: str, worksheet, has_header: bool) -> SheetDoc:
-    """Flatten one worksheet into a table of strings."""
+def _sheet(
+    name: str,
+    worksheet,
+    has_header: bool,
+    *,
+    theme: tuple[str, ...] | None = None,
+    with_styles: bool = True,
+) -> SheetDoc:
+    """Flatten one worksheet into a table of strings, and how each one is drawn."""
     from openpyxl.utils import get_column_letter
 
-    rows = [
-        [_xlsx_cell(value) for value in row]
-        for row in worksheet.iter_rows(values_only=True)
-    ]
+    styles: list[list[CellStyle]] | None = None
+    widths: dict[int, int] = {}
+    colored = False
+
+    if not with_styles:
+        rows = [
+            [_xlsx_cell(value) for value in row]
+            for row in worksheet.iter_rows(values_only=True)
+        ]
+    else:
+        palette = theme or xlsx_style.DEFAULT_THEME
+        cache: dict = {}
+        reds: dict = {}
+        rows, styles = [], []
+        for row in worksheet.iter_rows():
+            texts, row_styles = [], []
+            for cell in row:
+                text, red = _xlsx_text(cell.value, cell.number_format or "General")
+                style = xlsx_style.cell_style(cell, palette, cache)
+                if red:
+                    style = reds.setdefault(style, replace(style, color=_RED))
+                colored = colored or style.color is not None or style.background is not None
+                texts.append(text)
+                row_styles.append(style)
+            rows.append(texts)
+            styles.append(row_styles)
+        widths = xlsx_style.column_widths(worksheet)
+
     # A sheet's stated dimensions usually run past the data: trailing blank rows and
     # columns are dropped so the table is the size it looks in Excel.
     while rows and not any(cell.strip() for cell in rows[-1]):
         rows.pop()
+        if styles:
+            styles.pop()
     width = _used_width(rows)
     if not width:
         return SheetDoc(name, [], [])
     rows = [row[:width] + [""] * (width - len(row)) for row in rows]
+    if styles is not None:
+        filler = xlsx_style.DEFAULT
+        styles = [
+            row[:width] + [filler] * (width - len(row)) for row in styles
+        ]
 
     letters = [get_column_letter(index + 1) for index in range(width)]
     if has_header:
         columns = [cell.strip() or letters[i] for i, cell in enumerate(rows[0])]
         body = rows[1:]
+        column_styles = styles[0] if styles else None
+        body_styles = styles[1:] if styles else None
     else:
-        columns, body = letters, rows
-    return SheetDoc(name, columns, body)
+        # The letters are ours, not the file's, so they carry no style of their own.
+        columns, body, column_styles = letters, rows, None
+        body_styles = styles
+
+    column_widths = [widths.get(index + 1) for index in range(width)]
+    return SheetDoc(
+        name,
+        columns,
+        body,
+        None,
+        body_styles,
+        column_styles,
+        column_widths if any(w is not None for w in column_widths) else None,
+        colored,
+    )
 
 
 def _read_sheets(
@@ -345,9 +518,10 @@ def _read_sheets(
     formulas: bool = False,
     has_header: bool = True,
     max_rows: int | None = None,
+    styles: bool = True,
 ) -> list[SheetDoc]:
     """Read every worksheet of an xlsx. `formulas` reads the text of formula cells
-    instead of the values Excel last computed for them."""
+    instead of the values Excel last computed for them; `styles` reads the formatting."""
     from openpyxl import load_workbook
 
     try:
@@ -359,8 +533,18 @@ def _read_sheets(
                 io.BytesIO(data), read_only=True, data_only=not formulas
             )
             try:
+                # The theme palette is per workbook, and cell colours index into it.
+                theme = (
+                    xlsx_style.theme_colors(book.loaded_theme) if styles else None
+                )
                 return [
-                    _sheet(worksheet.title, worksheet, has_header).head(max_rows)
+                    _sheet(
+                        worksheet.title,
+                        worksheet,
+                        has_header,
+                        theme=theme,
+                        with_styles=styles,
+                    ).head(max_rows)
                     for worksheet in book.worksheets
                 ]
             finally:
@@ -375,13 +559,21 @@ def load_xlsx(
     *,
     has_header: bool = True,
     max_rows: int | None = None,
+    styles: bool = True,
 ) -> WorkbookDoc:
     """Read a workbook from file bytes. Raises ValueError if openpyxl cannot."""
-    sheets = _read_sheets(data, has_header=has_header, max_rows=max_rows)
+    sheets = _read_sheets(
+        data, has_header=has_header, max_rows=max_rows, styles=styles
+    )
     if not sheets:
         raise ValueError("the workbook has no sheets")
     return WorkbookDoc(
-        sheets, path, source=data, has_header=has_header, max_rows=max_rows
+        sheets,
+        path,
+        source=data,
+        has_header=has_header,
+        max_rows=max_rows,
+        styles=styles,
     )
 
 
@@ -404,4 +596,6 @@ def load(
         raise ValueError("images are loaded from bytes with load_image()")
     if mode == "xlsx":
         raise ValueError("workbooks are loaded from bytes with load_xlsx()")
+    if mode == "pdf":
+        raise ValueError("PDFs are loaded from bytes with load_pdf()")
     raise ValueError(f"unknown mode: {mode!r}")

@@ -275,3 +275,31 @@ async def test_anchor_links_scroll_instead_of_opening(tmp_path):
         await pilot.pause()
         assert opened == []
         assert view.scroll_offset.y > 0
+
+
+# -- sixel -------------------------------------------------------------------
+
+
+async def test_sixel_leaves_the_cursor_on_the_line_it_is_drawing():
+    """textual-image moves the cursor to the row *below* the image after the Sixel
+    data, which scrolled the screen when that row was the bottom line."""
+    from rich.control import Control
+    from textual.app import App
+    from textual.widgets import Footer
+
+    from lcat.views import FixedSixelImage
+
+    class Tall(App):
+        CSS = "#img { height: 1fr; width: 20; }"
+
+        def compose(self):
+            yield FixedSixelImage(PILImage.new("RGB", (100, 400), "white"), id="img")
+            yield Footer()
+
+    app = Tall()
+    async with app.run_test(size=(40, 12)):
+        impl = app.query_one("#img").children[0]
+        region = app.screen.find_widget(impl).visible_region
+        assert region.bottom == 11  # right above the footer, on the bottom line
+        *_, after = impl._get_sixel_segments("<sixel>")
+        assert after.text == Control.move_to(region.right, region.bottom - 1).segment.text

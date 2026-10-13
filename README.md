@@ -3,19 +3,21 @@
 A `cat` that renders. Point it at a markdown file and get styled, scrollable prose with a
 table-of-contents jump list, clickable links and inline images; point it at a CSV and get a
 full-screen table you can walk with the arrow keys, search, sort, and copy from; point it at a
-spreadsheet and get the same table, a sheet at a time; point it at a PNG and see the picture.
+spreadsheet and get the same table, a sheet at a time; point it at a PDF and page through it;
+point it at a PNG and see the picture.
 
 ```
 lcat notes.md
 lcat data.csv
 lcat records.json
 lcat book.xlsx
+lcat paper.pdf
 lcat photo.png
 ```
 
-Markdown, CSV, TSV, JSON (including JSON Lines), xlsx workbooks and PNG/JPEG/GIF/BMP/WebP/TIFF
-images are supported. Press `i` to edit what you are looking at and `ctrl+s` to write it back
-(xlsx is read-only). The view follows the file: when something else writes it, lcat reloads it
+Markdown, CSV, TSV, JSON (including JSON Lines), xlsx workbooks, PDFs and
+PNG/JPEG/GIF/BMP/WebP/TIFF images are supported. Press `i` to edit what you are looking at and
+`ctrl+s` to write it back (xlsx and PDF are read-only). The view follows the file: when something else writes it, lcat reloads it
 in place (`R` toggles this, `r` reloads on demand). When stdout is not a terminal
 (`lcat notes.md | less -R`) it prints a static render and exits, so it stays usable in a pipe.
 
@@ -31,7 +33,7 @@ uv tool install .
 ```
 lcat [FILE|-] [options]
 
-  --mode {auto,md,csv,tsv,json,xlsx,img}
+  --mode {auto,md,csv,tsv,json,xlsx,pdf,img}
                                   force a renderer (default: auto, by extension then sniffing)
   -p, --plain                     static render to stdout instead of the interactive view
   -d, --delimiter CHAR            delimiter for csv/tsv (default: sniffed)
@@ -40,6 +42,7 @@ lcat [FILE|-] [options]
   --encoding ENC                  input encoding (default: utf-8)
   --max-rows N                    show only the first N rows of a table
   --no-images                     show markdown images as their alt text
+  --no-style                      ignore an xlsx's colours, fonts and column widths
   --no-reload                     start with auto-reload off
   --version
 ```
@@ -83,6 +86,13 @@ Workbook view (xlsx): the table keys above, minus editing, plus
 | `]` `[` | next / previous sheet |
 | `f` | show formulas instead of the values Excel computed |
 
+PDF view: the image keys below, plus
+
+| Key | Action |
+| --- | --- |
+| `]` `[` | next / previous page |
+| `t` | toggle the page picture / its text |
+
 Image view:
 
 | Key | Action |
@@ -117,24 +127,55 @@ table and the active sheet in the subtitle; `]` and `[` walk them. Cells show th
 last computed and saved, so a formula whose result was never written to the file reads as empty;
 `f` swaps the whole sheet to the formula text (`=C2*D2`) and back. Trailing blank rows and
 columns are dropped, so the table is the size it looks in Excel, while gaps inside the sheet are
-kept — an unnamed column keeps its spreadsheet letter. Dates come out as `2026-03-04`,
-timestamps as `2026-03-04 09:30:00`, and number formats (currency, percent, decimal places) are
-not applied: you get the underlying value.
+kept — an unnamed column keeps its spreadsheet letter.
+
+### Formatting
+
+A sheet keeps the formatting it has in Excel: font colours, bold and italic, solid fills,
+alignment, and the column widths you set by hand. Number formats are applied too, so a cell
+holding `0.255` under a `0.0%` format reads `25.5%`, `#,##0.00` with a currency symbol reads
+`$1,234.50`, and a `[Red]` negative comes out red. Anything outside that subset — scientific
+notation, fractions, durations — falls back to the plain value. Dates ignore the cell's format
+on purpose and always read `2026-03-04` (or `2026-03-04 09:30:00`): unambiguous in a terminal,
+and it sorts correctly.
+
+A workbook picks its colours assuming a white page behind them, so a sheet that carries any
+colour of its own is drawn on one — otherwise the file's own defaults (black text, no fill)
+would be invisible against a dark terminal. Sheets with no colours keep the app's theme.
+`--no-style` turns the lot off and is the default when `NO_COLOR` is set.
+
+Borders, merged cells, row heights and conditional formatting are not carried over.
+Conditional formatting is worth singling out: the colours it produces live in rules rather
+than on the cells, so a sheet that looks banded in Excel arrives here unbanded.
 
 Workbooks are read-only. openpyxl cannot round-trip everything an xlsx holds — charts, images
 and pivot tables do not survive a save — so `i` and `ctrl+s` decline rather than quietly drop
 parts of your file. `.xlsm` reads too (the macros are ignored); `.xls`, the pre-2007 binary
 format, does not.
 
+## PDFs
+
+A PDF opens one page at a time, drawn as a picture the same way an image is (see below), with
+`]` and `[` to turn the page and the page number in the subtitle. `t` swaps the picture for the
+page's text, which scrolls like the markdown view. Where the terminal can only draw coloured
+blocks a page of type is unreadable, so there lcat starts on the text instead. A scanned page
+has no text to show; it says so.
+
+`lcat -p paper.pdf` prints the text of every page with a rule between pages, so
+`lcat -p paper.pdf | grep` works. Pages are rendered and read on demand, so a 500-page PDF
+opens as quickly as a one-page one. Rendering and text extraction are PDFium's (through
+pypdfium2). PDFs are read-only, and a password-protected one is refused.
+
 ## Following the file
 
 Once a second lcat checks the file's modification time and size, and when they change it
 reads the file again with the same options and updates the view in place: the table keeps its
 cursor, sort is reset, the search is re-run, markdown and code keep their scroll position, an
-image keeps its zoom, and a workbook stays on the sheet you were reading (matched by name) in
-whichever of the value and formula readings you had up. If the file turns into a different kind
-of document (a JSON table that stops being tabular, say) the view is swapped. The subtitle shows
-`watching` while this is on; `R` toggles it and `--no-reload` starts with it off.
+image keeps its zoom, a PDF stays on its page and reading, and a workbook stays on the sheet
+you were reading (matched by name) in whichever of the value and formula readings you had up.
+If the file turns into a different kind of document (a JSON table that stops being tabular,
+say) the view is swapped. The subtitle shows `watching` while this is on; `R` toggles it and
+`--no-reload` starts with it off.
 
 Unsaved edits are never overwritten: if the file changes while the subtitle says `modified`
 (or while you are in insert mode) lcat only warns. `r` is the explicit reload and discards the
@@ -167,7 +208,8 @@ it prints a one-line summary (`photo.png: PNG image, 480×270 px`).
 
 - Format detection is by extension first, then by content, so extensionless files and stdin
   still land in the right view. A markdown pipe table is treated as markdown, not as
-  pipe-delimited data, and image files and xlsx workbooks are recognised by their magic bytes.
+  pipe-delimited data, and image files, PDFs and xlsx workbooks are recognised by their magic
+  bytes.
 - Textual's `DataTable` measures every cell it is handed, so very large tables are streamed in
   batches: the first screenful appears immediately and the status line shows the progress. A
   50k-row, 10 MB CSV paints in about a quarter of a second and finishes loading in about two and
@@ -183,6 +225,8 @@ uv run pytest -q
 uv run lcat samples/sample.csv
 uv run lcat samples/nested.json   # JSON that is not a table: the raw code view
 uv run lcat samples/sample.md     # includes an image and links
-uv run lcat samples/sample.xlsx  # three sheets, a formula column ([ ] and f)
+uv run lcat samples/sample.xlsx   # three sheets, a formula column ([ ] and f)
+uv run lcat samples/styled.xlsx   # fills, fonts, currency and percent formats
+uv run lcat samples/sample.pdf   # three pages ([ ] and t)
 uv run lcat samples/sample.png
 ```

@@ -12,13 +12,22 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Static
 
-from lcat.loaders import CodeDoc, Document, ImageDoc, MarkdownDoc, TableDoc, WorkbookDoc
+from lcat.loaders import (
+    CodeDoc,
+    Document,
+    ImageDoc,
+    MarkdownDoc,
+    PdfDoc,
+    TableDoc,
+    WorkbookDoc,
+)
 from lcat.save import SaveError, save
 from lcat.views import (
     CodeView,
     HelpModal,
     ImageView,
     MarkdownView,
+    PdfView,
     RawEditor,
     TableView,
     WorkbookView,
@@ -120,6 +129,8 @@ class LcatApp(App[None]):
             yield self._editor()
         elif isinstance(self.doc, ImageDoc):
             yield ImageView(self.doc.image, id="view")
+        elif isinstance(self.doc, PdfDoc):
+            yield PdfView(self.doc, id="view")
         else:  # pragma: no cover - guarded by the CLI
             raise TypeError(f"cannot display {type(self.doc).__name__}")
 
@@ -215,6 +226,12 @@ class LcatApp(App[None]):
             view.show_workbook(doc)
         elif same_kind and isinstance(doc, ImageDoc):
             view.set_image(doc.image)
+        elif same_kind and isinstance(doc, PdfDoc):
+            # Stay on the same page, in the same reading, unless the PDF got shorter.
+            assert isinstance(previous, PdfDoc)  # same_kind
+            doc.index = min(previous.index, doc.page_count - 1)
+            doc.as_text = previous.as_text
+            view.show_pdf(doc)
         else:
             await self.query("#view, #editor").remove()
             await self.mount_all(list(self._view_widgets()), before=self.query_one(Footer))
@@ -254,6 +271,12 @@ class LcatApp(App[None]):
             parts = [sheet.name, self._shape(rows, cols, sheet.total_rows)]
             if self.doc.formulas:
                 parts.append("formulas")
+            about = " · ".join(parts)
+            return f"{path.name} · {about}" if path else about
+        if isinstance(self.doc, PdfDoc):
+            parts = [f"page {self.doc.index + 1} of {self.doc.page_count}"]
+            if self.doc.as_text:
+                parts.append("text")
             about = " · ".join(parts)
             return f"{path.name} · {about}" if path else about
         if isinstance(self.doc, ImageDoc):
@@ -329,6 +352,9 @@ class LcatApp(App[None]):
     def action_save(self) -> None:
         if isinstance(self.doc, WorkbookDoc):
             self.notify("xlsx files are read-only", severity="warning", timeout=3)
+            return
+        if isinstance(self.doc, PdfDoc):
+            self.notify("PDF files are read-only", severity="warning", timeout=3)
             return
         if self.editing:
             self._take_text(self.query_one("#editor", RawEditor).text)

@@ -9,13 +9,21 @@ from pathlib import Path
 
 from lcat import __version__
 from lcat.detect import MODES, SNIFF_BYTES, resolve_mode
-from lcat.loaders import Document, TableDoc, WorkbookDoc, load, load_image, load_xlsx
+from lcat.loaders import (
+    Document,
+    TableDoc,
+    WorkbookDoc,
+    load,
+    load_image,
+    load_pdf,
+    load_xlsx,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lcat",
-        description="Render markdown, CSV/TSV, JSON, xlsx and image files in the terminal.",
+        description="Render markdown, CSV/TSV, JSON, xlsx, PDF and image files in the terminal.",
     )
     parser.add_argument("file", help="file to view, or - for stdin")
     parser.add_argument(
@@ -54,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-images",
         action="store_true",
         help="show markdown images as their alt text instead of rendering them",
+    )
+    parser.add_argument(
+        "--no-style",
+        action="store_true",
+        help="ignore an xlsx's colours, fonts and column widths (on when NO_COLOR is set)",
     )
     parser.add_argument(
         "--no-reload",
@@ -100,9 +113,15 @@ def _build(raw: bytes, path: Path | None, mode: str, args: argparse.Namespace) -
     """Turn file bytes into a document with the options given on the command line."""
     if mode == "img":
         return load_image(raw, path)
+    if mode == "pdf":
+        return load_pdf(raw, path)
     if mode == "xlsx":
         return load_xlsx(
-            raw, path, has_header=not args.no_header, max_rows=args.max_rows
+            raw,
+            path,
+            has_header=not args.no_header,
+            max_rows=args.max_rows,
+            styles=not (args.no_style or os.environ.get("NO_COLOR")),
         )
     doc = load(
         raw.decode(args.encoding, errors="replace"),

@@ -45,6 +45,20 @@ def cell_size() -> tuple[int, int]:
         return FALLBACK_CELL
 
 
+def has_pixels() -> bool:
+    """True if the terminal draws real pixels (Sixel or kitty), not character blocks.
+
+    Half-cell blocks still make a recognisable photo, but not a readable page of text,
+    so the PDF view starts on the text reading when this is False. Importing
+    textual_image probes the terminal; see the module docstring.
+    """
+    from textual_image.renderable import Image
+    from textual_image.renderable.sixel import Image as Sixel
+    from textual_image.renderable.tgp import Image as Kitty
+
+    return Image in (Sixel, Kitty)
+
+
 def natural_cells(width_px: int, height_px: int) -> tuple[int, int]:
     """How many cells an image covers at one image pixel per screen pixel."""
     cell_w, cell_h = cell_size()

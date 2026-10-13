@@ -9,7 +9,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-MODES = ("auto", "md", "csv", "tsv", "json", "xlsx", "img")
+MODES = ("auto", "md", "csv", "tsv", "json", "xlsx", "pdf", "img")
 
 _EXTENSIONS = {
     ".md": "md",
@@ -24,6 +24,7 @@ _EXTENSIONS = {
     ".ndjson": "json",
     ".xlsx": "xlsx",
     ".xlsm": "xlsx",
+    ".pdf": "pdf",
     ".png": "img",
     ".jpg": "img",
     ".jpeg": "img",
@@ -121,6 +122,12 @@ def is_xlsx(data: bytes) -> bool:
     return b"[Content_Types].xml" in data and b"xl/" in data
 
 
+def is_pdf(data: bytes) -> bool:
+    """True if `data` starts like a PDF. The spec lets `%PDF-` sit anywhere in the
+    first kilobyte, and files with junk ahead of it are common enough to allow."""
+    return b"%PDF-" in data[:1024]
+
+
 def sniff_mode(sample: str) -> str:
     """Guess a mode from the head of a file. Falls back to markdown."""
     stripped = sample.strip()
@@ -164,6 +171,8 @@ def resolve_mode(
     if raw is not None:
         if is_xlsx(raw):
             return "xlsx"
+        if is_pdf(raw):
+            return "pdf"
         if is_image(raw):
             return "img"
     return sniff_mode(sample)

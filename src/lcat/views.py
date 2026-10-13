@@ -11,6 +11,9 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.control import Control
+from rich.segment import ControlType, Segment
+from rich.style import Style as RichStyle
 from rich.syntax import Syntax
 from textual import events
 from textual.binding import Binding
@@ -23,14 +26,52 @@ from textual.style import Style
 from textual.widget import Widget
 from textual.widgets import DataTable, Input, Markdown, MarkdownViewer, Static, TextArea
 from textual.widgets.markdown import MarkdownBlock, MarkdownTableOfContents
-from textual_image.widget import Image as TerminalImage
+from textual_image.widget import Image as AutoImage
+from textual_image.widget import SixelImage
+from textual_image.widget.sixel import _ImageSixelImpl, _NoopRenderable
 
-from lcat.images import browser_url, local_path, natural_cells
-from lcat.loaders import WorkbookDoc
+from lcat.images import browser_url, has_pixels, local_path, natural_cells
+from lcat.loaders import PdfDoc, SheetDoc, WorkbookDoc
+from lcat.xlsx_style import StyledCell
 
 if TYPE_CHECKING:  # pragma: no cover
     from markdown_it.token import Token
     from PIL.Image import Image as PILImage
+
+_NULL_STYLE = RichStyle()
+
+
+class _SixelImpl(_ImageSixelImpl):
+    """textual-image's Sixel renderer with the cursor put back where it belongs.
+
+    The Sixel data rides on the last line of the image, and after it the cursor is
+    moved to `visible_region.bottom` -- which is exclusive, so one row *below* the
+    line still being drawn. Textual then writes the rest of that line a row too
+    low. Usually the next line paints over it, but when the image sits right above
+    the footer that row is the last line of the screen, the write reaches its last
+    column, and the terminal scrolls everything up by one: the header vanishes and
+    Textual never knows to repaint it. Every PDF page, and any image tall enough to
+    fill the view, did this in tmux.
+    """
+
+    def _get_sixel_segments(self, sixel_data: str) -> list[Segment]:
+        region = self.screen.find_widget(self).visible_region
+        return [
+            Segment(Control.move_to(region.x, region.y).segment.text, _NULL_STYLE),
+            Segment(sixel_data, _NULL_STYLE, ((ControlType.CURSOR_FORWARD, 0),)),
+            Segment(Control.move_to(region.right, region.bottom - 1).segment.text, _NULL_STYLE),
+        ]
+
+
+class FixedSixelImage(SixelImage, Renderable=_NoopRenderable):
+    """textual-image's Sixel widget, drawn by _SixelImpl."""
+
+    def compose(self):
+        yield _SixelImpl(self.image, self._sixel_options)
+
+
+TerminalImage = FixedSixelImage if AutoImage is SixelImage else AutoImage
+"""The image widget for this terminal, picked by textual-image when it was imported."""
 
 CELL_WIDTH = 60
 """Cells wider than this are truncated for display; `enter` shows the full value."""
@@ -60,12 +101,26 @@ def _truncate(value: str) -> str:
     return value
 
 
-def _sort_key(value: str):
-    text = value.strip()
+_NOT_NUMERIC = re.compile(r"[$€£¥,%\s]")
+"""Dressing a number format adds around the digits, for sorting purposes."""
+
+
+def _sort_key(value):
+    """Sort numbers as numbers, text as text, blanks last.
+
+    `value` is whatever the table stores, which for a workbook is a renderable rather
+    than a string -- DataTable.sort hands the stored cell straight to this.
+    """
+    text = str(value).strip()
     if not text:
         return (2, 0.0, "")
+    # Numbers may arrive formatted: $1,234.50, 7.5%, (800) for a negative. The symbol
+    # can sit behind the sign (-$800.00), so it is removed wherever it lands.
+    number = _NOT_NUMERIC.sub("", text)
+    if number.startswith("(") and number.endswith(")"):
+        number = "-" + number[1:-1]
     try:
-        return (0, float(text.replace(",", "").replace("%", "")), "")
+        return (0, float(number), "")
     except ValueError:
         return (1, 0.0, text.casefold())
 
@@ -501,8 +556,95 @@ class ImageView(ScrollableContainer):
         self.notify("fit to window" if self.fit else "actual size", timeout=2)
 
 
+class PdfView(ImageView):
+    """A PDF, one page at a time: the page as a picture, or `t` for its text.
+
+    Read-only, like a workbook. Where the terminal can only draw character blocks a
+    page of type is a blur, so the view starts on the text there.
+    """
+
+    BINDINGS = [
+        Binding("right_square_bracket", "next_page", "next page"),
+        Binding("left_square_bracket", "prev_page", "prev page", show=False),
+        Binding("t", "toggle_text", "text"),
+    ]
+
+    HELP = [
+        ("[ ]", "previous / next page"),
+        ("t", "toggle the page picture / its text"),
+        ("z", "toggle fit-to-window / actual size (picture)"),
+        ("arrows h j k l", "scroll"),
+        ("pgup pgdn ctrl+u ctrl+d", "scroll a page"),
+        ("g G home end", "top / bottom"),
+        ("r R", "reload from disk / toggle auto-reload"),
+        ("?", "this help"),
+        ("q", "quit"),
+    ]
+
+    def __init__(self, pdf: PdfDoc, id: str | None = None) -> None:
+        if not has_pixels():
+            pdf.as_text = True
+        self.pdf = pdf
+        super().__init__(pdf.page_image(pdf.index), id=id)
+
+    def compose(self):
+        yield from super().compose()
+        yield Static(id="page-text", markup=False)
+
+    def on_mount(self) -> None:
+        # ImageView.on_mount runs too (Textual calls every on_mount in the MRO).
+        self._show_page(home=False)
+
+    def _show_page(self, *, home: bool) -> None:
+        pdf = self.pdf
+        text = self.query_one("#page-text", Static)
+        if pdf.as_text:
+            words = pdf.page_text(pdf.index)
+            text.update(words or Content.styled("(no text on this page)", "dim"))
+        else:
+            self.set_image(pdf.page_image(pdf.index))
+        text.display = pdf.as_text
+        self.image_widget.display = not pdf.as_text
+        if home:
+            self.scroll_home(animate=False)
+        self.app.refresh_status()
+
+    def show_pdf(self, pdf: PdfDoc) -> None:
+        """Show a different PDF (a reload of the same file), keeping the page."""
+        self.pdf = pdf
+        self._show_page(home=False)
+
+    def _step_page(self, delta: int) -> None:
+        pdf = self.pdf
+        index = pdf.index + delta
+        if not 0 <= index < pdf.page_count:
+            self.notify("first page" if index < 0 else "last page", timeout=2)
+            return
+        pdf.index = index
+        self._show_page(home=True)
+
+    def action_next_page(self) -> None:
+        self._step_page(1)
+
+    def action_prev_page(self) -> None:
+        self._step_page(-1)
+
+    def action_toggle_text(self) -> None:
+        self.pdf.as_text = not self.pdf.as_text
+        self._show_page(home=True)
+
+    def action_toggle_zoom(self) -> None:
+        if self.pdf.as_text:
+            self.notify("z zooms the page picture; t shows it", timeout=2)
+            return
+        super().action_toggle_zoom()
+
+
 class TableView(Vertical):
     """A DataTable with cell navigation, search, sorting and copying."""
+
+    TABLE_OPTIONS = {"cursor_type": "cell", "zebra_stripes": True, "fixed_columns": 1}
+    """How the DataTable is built. A worksheet varies it; see WorkbookView."""
 
     BINDINGS = [
         Binding("h", "cursor_left", "left", show=False),
@@ -555,7 +697,7 @@ class TableView(Vertical):
         self._loading = False
 
     def compose(self):
-        yield DataTable(id="table", cursor_type="cell", zebra_stripes=True, fixed_columns=1)
+        yield DataTable(id="table", **self.TABLE_OPTIONS)
         yield Static("", id="status")
         search = Input(placeholder="search cells…", id="search")
         search.display = False
@@ -563,9 +705,14 @@ class TableView(Vertical):
 
     def on_mount(self) -> None:
         table = self.table
-        table.add_columns(*self.columns)
+        self._add_columns(table)
         table.focus()
         self._populate()
+
+    def _add_columns(self, table: DataTable) -> None:
+        """Give the table its headers. A worksheet overrides this to carry Excel's
+        own column widths and header styling."""
+        table.add_columns(*self.columns)
 
     def replace(self, columns: list[str], rows: list[list[str]]) -> None:
         """Show new data, keeping the cursor where it was (clamped) and the search."""
@@ -576,7 +723,7 @@ class TableView(Vertical):
         self.view_rows = list(rows)
         self._sort_column, self._sort_state = None, 0
         table.clear(columns=True)
-        table.add_columns(*columns)
+        self._add_columns(table)
         self._populate()
         if self._query:
             self._matches = self._find_matches(self._query)
@@ -875,14 +1022,71 @@ class WorkbookView(TableView):
         ("q", "quit"),
     ]
 
+    TABLE_OPTIONS = {
+        "cursor_type": "cell",
+        # The workbook brings its own colours; zebra banding over them would read as a
+        # fill the file does not contain.
+        "zebra_stripes": False,
+        "fixed_columns": 1,
+        # Both default to letting the renderable win, which hides the cursor entirely
+        # on a filled cell. The cursor cell is drawn wholly in the cursor's colours.
+        "cursor_foreground_priority": "css",
+        "cursor_background_priority": "css",
+    }
+
     def __init__(self, workbook: WorkbookDoc, id: str | None = None) -> None:
         sheet = workbook.sheet
+        # Set before super(), whose on_mount reaches straight back into _display.
+        self._take_styles(sheet)
         super().__init__(sheet.columns, sheet.rows, id=id)
         self.workbook = workbook
 
     def compose(self):
         yield Static(self._sheet_strip(), id="sheets")
         yield from super().compose()
+
+    # -- formatting ------------------------------------------------------
+
+    def _take_styles(self, sheet: SheetDoc) -> None:
+        """Hold on to the sheet's formatting. Called before `super().__init__` too, so
+        it must not touch the widget itself; `_add_columns` sets the CSS class."""
+        self._styles = sheet.styles
+        self._column_styles = sheet.column_styles
+        self._widths = sheet.widths
+        self._colored = sheet.colored
+
+    def _add_columns(self, table: DataTable) -> None:
+        # Both the first mount and every sheet switch come through here, so it is also
+        # where the sheet decides whether it is drawn on paper. (Not on_mount: Textual
+        # dispatches that to every handler in the MRO, so a super() call runs twice.)
+        self.set_class(self._colored, "styled")
+        widths, styles = self._widths, self._column_styles
+        for index, name in enumerate(self.columns):
+            label = name
+            if styles and index < len(styles):
+                label = StyledCell(name, styles[index])
+            width = widths[index] if widths and index < len(widths) else None
+            if width is not None:
+                width = min(max(width, 3), CELL_WIDTH)
+            table.add_column(label, width=width)
+
+    def _display(self, rows: list[list[str]]) -> list[list]:
+        """Cells as renderables, so they carry the workbook's formatting.
+
+        Overridden here rather than widened in TableView so CSV and JSON tables keep
+        handing the DataTable plain strings. `_display` is only ever called with rows
+        in source order, so the styles line up positionally.
+        """
+        styles = self._styles
+        if styles is None:
+            return super()._display(rows)
+        return [
+            [
+                StyledCell(_truncate(cell), style)
+                for cell, style in zip(row, row_styles)
+            ]
+            for row, row_styles in zip(rows, styles)
+        ]
 
     # -- sheets ----------------------------------------------------------
 
@@ -895,6 +1099,7 @@ class WorkbookView(TableView):
         """Put the selected sheet on screen. `home` resets the cursor, which is what
         a different sheet wants; the formula toggle keeps its place instead."""
         sheet = self.workbook.sheet
+        self._take_styles(sheet)
         self.replace(sheet.columns, sheet.rows)
         if home:
             self.table.move_cursor(row=0, column=0)

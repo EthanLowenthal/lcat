@@ -1,0 +1,78 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 205 >>
+stream
+BT
+/F1 14 Tf
+72 720 Td
+18 TL
+(lcat sample PDF) Tj T*
+() Tj T*
+(Page one of three. Press ] for the next page,) Tj T*
+([ for the previous one, and t to read the text) Tj T*
+(instead of the picture.) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 155 >>
+stream
+BT
+/F1 14 Tf
+72 720 Td
+18 TL
+(Page two) Tj T*
+() Tj T*
+(Text is extracted by PDFium in reading order,) Tj T*
+(so lcat -p sample.pdf | grep works.) Tj T*
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 82 >>
+stream
+BT
+/F1 14 Tf
+72 720 Td
+18 TL
+(Page three) Tj T*
+() Tj T*
+(The last page.) Tj T*
+ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000127 00000 n 
+0000000197 00000 n 
+0000000323 00000 n 
+0000000579 00000 n 
+0000000705 00000 n 
+0000000911 00000 n 
+0000001037 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+1169
+%%EOF
